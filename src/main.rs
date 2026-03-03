@@ -38,6 +38,7 @@ async fn main() {
 
     let handler = Handler {
         active_sessions: Mutex::new(HashMap::new()),
+        workspace_folders: Mutex::new(HashMap::new()),
         queue_tx: tx,
         queue_size,
     };

@@ -14,6 +14,7 @@ use crate::session::get_or_create_session;
 
 pub struct Handler {
     pub active_sessions: Mutex<HashMap<ChannelId, String>>,
+    pub workspace_folders: Mutex<HashMap<ChannelId, String>>,
     pub queue_tx: mpsc::Sender<GeminiRequest>,
     pub queue_size: Arc<AtomicUsize>,
 }
@@ -34,23 +35,37 @@ impl EventHandler for Handler {
                 let help_text = "**Gemini Bot Commands:**\n\
                                  - `new`: Start a new conversation session.\n\
                                  - `list`: Show all saved session files.\n\
-                                 - `resume [session]`: Continue a specific session (e.g., `resume 20240101.md`).\n\
-                                 - `summary [session]`: Get an AI summary of a specific session.\n\
+                                 - `resume [session]`: Continue a specific session.\n\
+                                 - `summary [session]`: Get an AI summary of a session.\n\
+                                 - `workspace [path]`: Set a folder for AI context.\n\
                                  - `help`: Show this help message.\n\n\
-                                 *Any other message will be treated as a chat input for the current session.*";
+                                 *Any other message will be treated as chat input.*";
                 let _ = msg.channel_id.say(&ctx.http, help_text).await;
                 return;
             }
             "new" => {
                 let mut sessions = self.active_sessions.lock().await;
                 sessions.remove(&msg.channel_id);
+                let mut workspaces = self.workspace_folders.lock().await;
+                workspaces.remove(&msg.channel_id);
                 let _ = msg.channel_id.say(&ctx.http, "Started a new session! 🆕").await;
                 log_to_file("STATUS", "User started a new session.").await;
                 return;
             }
+            "workspace" => {
+                if let Some(path) = parts.get(1) {
+                    let mut workspaces = self.workspace_folders.lock().await;
+                    workspaces.insert(msg.channel_id, path.to_string());
+                    let _ = msg.channel_id.say(&ctx.http, format!("Workspace folder set to: `{}` 📂", path)).await;
+                    log_to_file("STATUS", &format!("User set workspace: {}", path)).await;
+                } else {
+                    let _ = msg.channel_id.say(&ctx.http, "Usage: `workspace [path]`").await;
+                }
+                return;
+            }
             "list" => {
                 let mut response = String::from("**Session List:**\n");
-                if let Ok(mut entries) = fs::read_dir("sessions").await {
+                if let Ok(mut entries) = fs::read_dir("workspace/sessions").await {
                     while let Ok(Some(entry)) = entries.next_entry().await {
                         let file_name = entry.file_name().to_string_lossy().into_owned();
                         if file_name.ends_with(".md") {
@@ -69,7 +84,7 @@ impl EventHandler for Handler {
             }
             "resume" => {
                 if let Some(session_name) = parts.get(1) {
-                    let path = format!("sessions/{}", session_name);
+                    let path = format!("workspace/sessions/{}", session_name);
                     if fs::metadata(&path).await.is_ok() {
                         let mut sessions = self.active_sessions.lock().await;
                         sessions.insert(msg.channel_id, path.clone());
@@ -85,16 +100,26 @@ impl EventHandler for Handler {
             }
             "summary" => {
                 if let Some(session_name) = parts.get(1) {
-                    let path = format!("sessions/{}", session_name);
-                    if let Ok(history) = fs::read_to_string(&path).await {
+                    let path = format!("workspace/sessions/{}", session_name);
+                    if fs::metadata(&path).await.is_ok() {
                         let _ = msg.react(&ctx.http, '👀').await;
                         self.queue_size.fetch_add(1, Ordering::SeqCst);
+                        let workspaces = self.workspace_folders.lock().await;
+                        let workspace_path = workspaces.get(&msg.channel_id).cloned();
+
+                        let soul_path = if fs::metadata("workspace/SOUL.md").await.is_ok() {
+                            Some("workspace/SOUL.md".to_string())
+                        } else {
+                            None
+                        };
+
                         let request = GeminiRequest {
                             ctx: ctx.clone(),
                             msg: msg.clone(),
                             session_path: path,
+                            soul_path,
+                            workspace_path,
                             content: "Summarize the above conversation history in a concise way.".to_string(),
-                            history,
                             is_first_message: false,
                         };
                         if let Err(e) = self.queue_tx.send(request).await {
@@ -119,7 +144,7 @@ impl EventHandler for Handler {
                 }
                 if content_str == "session list" {
                     let mut response = String::from("**Session List:**\n");
-                    if let Ok(mut entries) = fs::read_dir("sessions").await {
+                    if let Ok(mut entries) = fs::read_dir("workspace/sessions").await {
                         while let Ok(Some(entry)) = entries.next_entry().await {
                             let file_name = entry.file_name().to_string_lossy().into_owned();
                             if file_name.ends_with(".md") {
@@ -151,26 +176,29 @@ impl EventHandler for Handler {
 
         let session_path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
         
-        let history = match fs::read_to_string(&session_path).await {
-            Ok(h) => {
-                log_to_file("INFO", &format!("Loaded context from {}: {} bytes", session_path, h.len())).await;
-                h
-            }
-            Err(e) => {
-                log_to_file("ERROR", &format!("Failed to read session file {}: {}", session_path, e)).await;
-                String::new()
-            }
+        let is_first_message = if let Ok(metadata) = fs::metadata(&session_path).await {
+            metadata.len() < 100 // Simple check: small files are likely new
+        } else {
+            true
         };
 
-        let is_first_message = history.contains("# New Session") && !history.contains("User:");
+        let workspaces = self.workspace_folders.lock().await;
+        let workspace_path = workspaces.get(&msg.channel_id).cloned();
+
+        let soul_path = if fs::metadata("workspace/SOUL.md").await.is_ok() {
+            Some("workspace/SOUL.md".to_string())
+        } else {
+            None
+        };
 
         self.queue_size.fetch_add(1, Ordering::SeqCst);
         let request = GeminiRequest {
             ctx,
             msg,
             session_path,
+            soul_path,
+            workspace_path,
             content: content_str,
-            history,
             is_first_message,
         };
 

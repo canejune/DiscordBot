@@ -13,24 +13,28 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
     let msg = req.msg;
     let session_path = req.session_path;
     let content = req.content;
-    let history = req.history;
     let is_first_message = req.is_first_message;
 
-    let system_instruction = "You are a helpful Discord bot. Below is the conversation history for context. \
+    let system_instruction = "You are a helpful Discord bot. Above is the conversation history for context. \
                              Do NOT repeat previous answers or the 'Gemini:' prefix in your response. \
-                             Your task is to respond specifically to the message in the '[Latest Message]' section using the history for context.";
+                             Your task is to respond specifically to the message below using the history (provided via stdin) for context.";
     
     let full_prompt = format!(
-        "{}\n\n[Conversation History]\n{}\n\n[Latest Message]\nUser: {}\nGemini: ", 
+        "{}\n\n[Latest Message]\nUser: {}\nGemini: ", 
         system_instruction,
-        history, 
         content
     );
 
     let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
 
     let mut command = Command::new("gemini");
-    command.arg("-y").arg("-p").arg(&full_prompt);
+    command.arg("-y");
+    
+    if let Some(ref path) = req.workspace_path {
+        command.arg("--include-directories").arg(path);
+    }
+    
+    command.arg("-p").arg(&full_prompt);
     
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     let console_log = format!("[{}] [EXEC] gemini -y -p \"[PROMPT_CONTENT]\" (Prompt length: {} bytes)", timestamp, full_prompt.len());
@@ -44,6 +48,7 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
 
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    command.stdin(std::process::Stdio::piped());
 
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -57,6 +62,18 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
             return;
         }
     };
+
+    // Pipe SOUL.md and session file to stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(ref s_path) = req.soul_path {
+            if let Ok(soul_content) = fs::read_to_string(s_path).await {
+                let _ = stdin.write_all(format!("{}\n\n", soul_content).as_bytes()).await;
+            }
+        }
+        if let Ok(history) = fs::read_to_string(&session_path).await {
+            let _ = stdin.write_all(history.as_bytes()).await;
+        }
+    }
 
     let mut stdout_reader = BufReader::new(child.stdout.take().unwrap()).lines();
     let mut stderr_reader = BufReader::new(child.stderr.take().unwrap()).lines();
