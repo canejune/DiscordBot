@@ -4,7 +4,7 @@ mod session;
 mod gemini;
 mod handler;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -53,6 +53,8 @@ async fn main() {
         workspace_folders: Mutex::new(workspace_folders),
         queue_tx: tx,
         queue_size,
+        waiting_for_restart: Mutex::new(HashSet::new()),
+        start_time: chrono::Utc::now(),
     };
 
     let mut client = Client::builder(&token, intents)

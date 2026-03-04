@@ -36,7 +36,7 @@ sequenceDiagram
     alt Queue Full
         H->>User: React ⏳ & Say "Busy"
     else Queue OK
-        H->>H: Parse Command (new, list, resume, summary, workspace)
+        H->>H: Parse Command (new, list, resume, summary, workspace, restart, info)
         H->>S: get_or_create_session()
         S->>FS: Create/Read workspace/sessions/*.md
         S-->>H: session_path
@@ -64,7 +64,7 @@ sequenceDiagram
 | Module | Description | Key Functions |
 | :--- | :--- | :--- |
 | **main.rs** | Entry point. Initializes the bot, mpsc channel, and the background worker loop. Loads `state.json` to restore previous sessions. | `main()` |
-| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `resume`, `summary`, `workspace`), request queuing, and state persistence to `state.json`. | `message()`, `ready()`, `save_state()` |
+| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `resume`, `summary`, `workspace`, `restart`, `info`), request queuing, and state persistence to `state.json`. | `message()`, `ready()`, `save_state()` |
 | **gemini.rs** | Orchestrates the Gemini CLI. Handles stdin piping (SOUL.md + History), output streaming, and session updates. | `process_gemini_request()` |
 | **session.rs** | Manages persistent conversation history. Handles session creation and retrieval from per-channel directories in `workspace/sessions/{channel_id}/`. | `get_or_create_session()` |
 | **utils.rs** | Shared helper functions for logging and intelligent message splitting for Discord's limits. | `log_to_file()`, `split_message()` |

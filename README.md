@@ -16,6 +16,8 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
   - `resume [session]`: Continue a previous session from its file.
   - `summary [session]`: Get an AI-generated summary of a specific session.
   - `workspace [path]`: Set a specific folder for AI context (channel-specific).
+  - `restart`: Restart the bot with confirmation.
+  - `info`: Show detailed bot information, system status, and network info.
 - **State Persistence**: Automatically saves and restores active sessions and workspace settings across bot restarts using `state.json`.
 - **Queue System**: Handles concurrent requests efficiently with a sequential processing queue (up to 3 pending).
 - **Interactive Feedback**: Uses emoji reactions to show status:
