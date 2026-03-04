@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, Mutex};
 use serenity::prelude::*;
 use crate::handler::Handler;
 use crate::gemini::process_gemini_request;
+use serde_json;
 
 #[tokio::main]
 async fn main() {
@@ -26,8 +27,19 @@ async fn main() {
     let queue_size = Arc::new(AtomicUsize::new(0));
     let worker_queue_size = Arc::clone(&queue_size);
 
-    if !std::path::Path::new("sessions").exists() {
-        let _ = std::fs::create_dir("sessions");
+    if !std::path::Path::new("workspace/sessions").exists() {
+        let _ = std::fs::create_dir_all("workspace/sessions");
+    }
+
+    let mut active_sessions = HashMap::new();
+    let mut workspace_folders = HashMap::new();
+
+    if let Ok(state_json) = std::fs::read_to_string("workspace/sessions/state.json") {
+        if let Ok(state) = serde_json::from_str::<crate::types::BotState>(&state_json) {
+            active_sessions = state.active_sessions;
+            workspace_folders = state.workspace_folders;
+            println!("Loaded state for {} channels", active_sessions.len());
+        }
     }
 
     tokio::spawn(async move {
@@ -37,8 +49,8 @@ async fn main() {
     });
 
     let handler = Handler {
-        active_sessions: Mutex::new(HashMap::new()),
-        workspace_folders: Mutex::new(HashMap::new()),
+        active_sessions: Mutex::new(active_sessions),
+        workspace_folders: Mutex::new(workspace_folders),
         queue_tx: tx,
         queue_size,
     };

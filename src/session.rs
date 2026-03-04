@@ -10,7 +10,9 @@ pub async fn get_or_create_session(active_sessions: &tokio::sync::Mutex<std::col
     }
 
     let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S");
-    let path = format!("workspace/sessions/{}.md", timestamp);
+    let channel_dir = format!("workspace/sessions/{}", channel_id);
+    let _ = fs::create_dir_all(&channel_dir).await;
+    let path = format!("{}/{}.md", channel_dir, timestamp);
     let _ = fs::write(&path, "# New Session\n\n").await;
     
     sessions.insert(channel_id, path.clone());

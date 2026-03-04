@@ -1,4 +1,6 @@
 /target
 .env
-sessions/
+workspace/sessions/
+workspace/skills/**/.venv/
 bot.log
+package-lock.json

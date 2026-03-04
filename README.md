@@ -9,13 +9,14 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
 - **AI Soul (`SOUL.md`)**: Configurable personality and behavioral instructions for the AI.
 - **Extensible Skills**: Modular skill system (e.g., `get_stock_price`) that allows the AI to perform specialized tasks using external scripts.
 - **Real-time Streaming**: Watch the AI's response appear in Discord as it's being generated.
-- **Session Management**: Rich commands to manage conversation history:
+- **Session Management**: Rich commands to manage conversation history with per-channel isolation:
   - `help`: Show the command guide.
   - `new`: Reset the conversation and start fresh.
-  - `list`: View all previously saved session files.
+  - `list`: View session files for the current channel.
   - `resume [session]`: Continue a previous session from its file.
   - `summary [session]`: Get an AI-generated summary of a specific session.
   - `workspace [path]`: Set a specific folder for AI context (channel-specific).
+- **State Persistence**: Automatically saves and restores active sessions and workspace settings across bot restarts using `state.json`.
 - **Queue System**: Handles concurrent requests efficiently with a sequential processing queue (up to 3 pending).
 - **Interactive Feedback**: Uses emoji reactions to show status:
   - 👀: Processing your request.
@@ -32,6 +33,8 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
 ├── workspace/          # AI Workspace
 │   ├── SOUL.md         # AI instructions and personality
 │   ├── sessions/       # Persistent session files
+│   │   ├── state.json  # Saved bot state (sessions/workspaces)
+│   │   └── {channel_id}/ # Per-channel session history
 │   └── skills/         # Modular skill scripts (Python, etc.)
 ├── Cargo.toml          # Rust dependencies
 └── README.md           # Documentation

@@ -11,12 +11,27 @@ use tokio::sync::{mpsc, Mutex};
 use crate::types::GeminiRequest;
 use crate::utils::log_to_file;
 use crate::session::get_or_create_session;
+use serde_json;
 
 pub struct Handler {
     pub active_sessions: Mutex<HashMap<ChannelId, String>>,
     pub workspace_folders: Mutex<HashMap<ChannelId, String>>,
     pub queue_tx: mpsc::Sender<GeminiRequest>,
     pub queue_size: Arc<AtomicUsize>,
+}
+
+impl Handler {
+    async fn save_state(&self) {
+        let active_sessions = self.active_sessions.lock().await.clone();
+        let workspace_folders = self.workspace_folders.lock().await.clone();
+        let state = crate::types::BotState {
+            active_sessions,
+            workspace_folders,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&state) {
+            let _ = fs::write("workspace/sessions/state.json", json).await;
+        }
+    }
 }
 
 #[async_trait]
@@ -34,7 +49,7 @@ impl EventHandler for Handler {
             "help" => {
                 let help_text = "**Gemini Bot Commands:**\n\
                                  - `new`: Start a new conversation session.\n\
-                                 - `list`: Show all saved session files.\n\
+                                 - `list`: Show saved session files for this channel.\n\
                                  - `resume [session]`: Continue a specific session.\n\
                                  - `summary [session]`: Get an AI summary of a session.\n\
                                  - `workspace [path]`: Set a folder for AI context.\n\
@@ -44,18 +59,24 @@ impl EventHandler for Handler {
                 return;
             }
             "new" => {
-                let mut sessions = self.active_sessions.lock().await;
-                sessions.remove(&msg.channel_id);
-                let mut workspaces = self.workspace_folders.lock().await;
-                workspaces.remove(&msg.channel_id);
+                {
+                    let mut sessions = self.active_sessions.lock().await;
+                    sessions.remove(&msg.channel_id);
+                    let mut workspaces = self.workspace_folders.lock().await;
+                    workspaces.remove(&msg.channel_id);
+                }
+                self.save_state().await;
                 let _ = msg.channel_id.say(&ctx.http, "Started a new session! 🆕").await;
                 log_to_file("STATUS", "User started a new session.").await;
                 return;
             }
             "workspace" => {
                 if let Some(path) = parts.get(1) {
-                    let mut workspaces = self.workspace_folders.lock().await;
-                    workspaces.insert(msg.channel_id, path.to_string());
+                    {
+                        let mut workspaces = self.workspace_folders.lock().await;
+                        workspaces.insert(msg.channel_id, path.to_string());
+                    }
+                    self.save_state().await;
                     let _ = msg.channel_id.say(&ctx.http, format!("Workspace folder set to: `{}` 📂", path)).await;
                     log_to_file("STATUS", &format!("User set workspace: {}", path)).await;
                 } else {
@@ -64,8 +85,9 @@ impl EventHandler for Handler {
                 return;
             }
             "list" => {
-                let mut response = String::from("**Session List:**\n");
-                if let Ok(mut entries) = fs::read_dir("workspace/sessions").await {
+                let mut response = String::from("**Session List for this channel:**\n");
+                let channel_dir = format!("workspace/sessions/{}", msg.channel_id);
+                if let Ok(mut entries) = fs::read_dir(&channel_dir).await {
                     while let Ok(Some(entry)) = entries.next_entry().await {
                         let file_name = entry.file_name().to_string_lossy().into_owned();
                         if file_name.ends_with(".md") {
@@ -76,22 +98,25 @@ impl EventHandler for Handler {
                         }
                     }
                 }
-                if response == "**Session List:**\n" {
-                    response.push_str("No sessions found.");
+                if response == "**Session List for this channel:**\n" {
+                    response.push_str("No sessions found for this channel.");
                 }
                 let _ = msg.channel_id.say(&ctx.http, response).await;
                 return;
             }
             "resume" => {
                 if let Some(session_name) = parts.get(1) {
-                    let path = format!("workspace/sessions/{}", session_name);
+                    let path = format!("workspace/sessions/{}/{}", msg.channel_id, session_name);
                     if fs::metadata(&path).await.is_ok() {
-                        let mut sessions = self.active_sessions.lock().await;
-                        sessions.insert(msg.channel_id, path.clone());
+                        {
+                            let mut sessions = self.active_sessions.lock().await;
+                            sessions.insert(msg.channel_id, path.clone());
+                        }
+                        self.save_state().await;
                         let _ = msg.channel_id.say(&ctx.http, format!("Resumed session: `{}` 🔄", session_name)).await;
                         log_to_file("STATUS", &format!("User resumed session: {}", session_name)).await;
                     } else {
-                        let _ = msg.channel_id.say(&ctx.http, format!("Error: Session file `{}` not found.", session_name)).await;
+                        let _ = msg.channel_id.say(&ctx.http, format!("Error: Session file `{}` not found in this channel.", session_name)).await;
                     }
                 } else {
                     let _ = msg.channel_id.say(&ctx.http, "Usage: `resume [session_filename]`").await;
@@ -100,7 +125,7 @@ impl EventHandler for Handler {
             }
             "summary" => {
                 if let Some(session_name) = parts.get(1) {
-                    let path = format!("workspace/sessions/{}", session_name);
+                    let path = format!("workspace/sessions/{}/{}", msg.channel_id, session_name);
                     if fs::metadata(&path).await.is_ok() {
                         let _ = msg.react(&ctx.http, '👀').await;
                         self.queue_size.fetch_add(1, Ordering::SeqCst);
@@ -127,7 +152,7 @@ impl EventHandler for Handler {
                             self.queue_size.fetch_sub(1, Ordering::SeqCst);
                         }
                     } else {
-                        let _ = msg.channel_id.say(&ctx.http, format!("Error: Session file `{}` not found.", session_name)).await;
+                        let _ = msg.channel_id.say(&ctx.http, format!("Error: Session file `{}` not found in this channel.", session_name)).await;
                     }
                 } else {
                     let _ = msg.channel_id.say(&ctx.http, "Usage: `summary [session_filename]`").await;
@@ -136,15 +161,19 @@ impl EventHandler for Handler {
             }
             _ => {
                 if content_str == "new session" {
-                    let mut sessions = self.active_sessions.lock().await;
-                    sessions.remove(&msg.channel_id);
+                    {
+                        let mut sessions = self.active_sessions.lock().await;
+                        sessions.remove(&msg.channel_id);
+                    }
+                    self.save_state().await;
                     let _ = msg.channel_id.say(&ctx.http, "Started a new session! 🆕").await;
                     log_to_file("STATUS", "User started a new session.").await;
                     return;
                 }
                 if content_str == "session list" {
-                    let mut response = String::from("**Session List:**\n");
-                    if let Ok(mut entries) = fs::read_dir("workspace/sessions").await {
+                    let mut response = String::from("**Session List for this channel:**\n");
+                    let channel_dir = format!("workspace/sessions/{}", msg.channel_id);
+                    if let Ok(mut entries) = fs::read_dir(&channel_dir).await {
                         while let Ok(Some(entry)) = entries.next_entry().await {
                             let file_name = entry.file_name().to_string_lossy().into_owned();
                             if file_name.ends_with(".md") {
@@ -155,8 +184,8 @@ impl EventHandler for Handler {
                             }
                         }
                     }
-                    if response == "**Session List:**\n" {
-                        response.push_str("No sessions found.");
+                    if response == "**Session List for this channel:**\n" {
+                        response.push_str("No sessions found for this channel.");
                     }
                     let _ = msg.channel_id.say(&ctx.http, response).await;
                     return;
@@ -174,7 +203,24 @@ impl EventHandler for Handler {
         let _ = msg.react(&ctx.http, '👀').await;
         log_to_file("INPUT", &format!("User: {}, Content: {}", msg.author.name, content_str)).await;
 
-        let session_path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+        let session_path = {
+            let sessions = self.active_sessions.lock().await;
+            if let Some(path) = sessions.get(&msg.channel_id) {
+                if fs::metadata(path).await.is_ok() {
+                    path.clone()
+                } else {
+                    drop(sessions);
+                    let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                    self.save_state().await;
+                    path
+                }
+            } else {
+                drop(sessions);
+                let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                self.save_state().await;
+                path
+            }
+        };
         
         let is_first_message = if let Ok(metadata) = fs::metadata(&session_path).await {
             metadata.len() < 100 // Simple check: small files are likely new
