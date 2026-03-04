@@ -49,7 +49,7 @@ sequenceDiagram
         loop Streaming Output
             G->>W: stdout chunk
             W->>User: msg.channel_id.say(chunk)
-        </div>
+        end
         W->>G: child.wait()
         W->>FS: Append response to session MD
         alt First Message
