@@ -8,13 +8,13 @@ The project is organized into modular components, each with a single responsibil
 
 ```mermaid
 graph TD
-    Main["src/main.rs (Entry & Worker)"] --> Handler["src/handler.rs (Events)"]
-    Main --> Gemini["src/gemini.rs (AI & Streaming)"]
+    Main["src/main.rs (Entry & Worker Loop)"] --> Handler["src/handler.rs (Event Handler)"]
+    Main --> Gemini["src/gemini.rs (CLI Integration)"]
     Handler --> Session["src/session.rs (Session Mgr)"]
     Handler --> Types["src/types.rs (Shared Types)"]
     Gemini --> Utils["src/utils.rs (Utilities)"]
-    Handler --> Utils
     Gemini --> Types
+    Handler --> Utils
 ```
 
 ## 🔄 Message Processing Flow
@@ -29,41 +29,64 @@ sequenceDiagram
     participant W as Worker (src/gemini.rs)
     participant G as Gemini CLI
     participant S as Session (src/session.rs)
+    participant FS as File System
 
-    User->>H: Sends Message
-    H->>H: Check Queue Size (< 3)
-    H->>S: get_or_create_session()
-    S-->>H: session_path
-    H->>Q: Send GeminiRequest
-    Note over H,W: Async Delegation
-    Q->>W: Receive Request
-    W->>W: Initial Reaction (👀)
-    W->>G: Spawn gemini -y -p "..."
-    loop Streaming Output
-        G->>W: stdout line
-        W->>User: msg.channel_id.say(chunk)
+    User->>H: Sends Message / Command
+    H->>H: Check Queue Size (Max 3)
+    alt Queue Full
+        H->>User: React ⏳ & Say "Busy"
+    else Queue OK
+        H->>H: Parse Command (new, list, resume, summary, workspace)
+        H->>S: get_or_create_session()
+        S->>FS: Create/Read workspace/sessions/*.md
+        S-->>H: session_path
+        H->>Q: Send GeminiRequest
+        Note over H,W: Async Delegation via mpsc
+        Q->>W: process_gemini_request()
+        W->>User: React 👀 & Broadcast Typing
+        W->>G: Spawn gemini -y [-i workspace] -p "..."
+        W->>G: Pipe SOUL.md + Session History to stdin
+        loop Streaming Output
+            G->>W: stdout chunk
+            W->>User: msg.channel_id.say(chunk)
+        </div>
+        W->>G: child.wait()
+        W->>FS: Append response to session MD
+        alt First Message
+            W->>FS: Update session title in MD
+        end
+        W->>User: React ✅ (or ❌ on error)
     end
-    W->>G: child.wait()
-    W->>W: Update Session MD File
-    W->>W: Success Reaction (✅)
 ```
 
 ## 🛠 Component Roles
 
 | Module | Description | Key Functions |
 | :--- | :--- | :--- |
-| **main.rs** | Entry point, worker initialization, and bot client setup. | `main()` |
-| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`help`, `new`, `list`, `resume`, `summary`) and queuing. | `message()`, `ready()` |
-| **gemini.rs** | Handles interaction with the Gemini CLI, including async streaming and summaries. | `process_gemini_request()` |
-| **session.rs** | Manages persistent conversation history in Markdown files. | `get_or_create_session()` |
-| **utils.rs** | Shared helper functions for logging and message chunking. | `log_to_file()`, `split_message()` |
-| **types.rs** | Central location for cross-module data structures. | `struct GeminiRequest` |
+| **main.rs** | Entry point. Initializes the bot, mpsc channel, and the background worker loop. | `main()` |
+| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `resume`, `summary`, `workspace`) and request queuing. | `message()`, `ready()` |
+| **gemini.rs** | Orchestrates the Gemini CLI. Handles stdin piping (SOUL.md + History), output streaming, and session updates. | `process_gemini_request()` |
+| **session.rs** | Manages persistent conversation history. Handles session creation and retrieval from `workspace/sessions/`. | `get_or_create_session()` |
+| **utils.rs** | Shared helper functions for logging and intelligent message splitting for Discord's limits. | `log_to_file()`, `split_message()` |
+| **types.rs** | Defines the `GeminiRequest` struct used for communication between the handler and worker. | `struct GeminiRequest` |
 
 ## 📁 Data Flow & Persistence
 
-1. **Input**: User message received by `Handler`.
-2. **Context**: `Handler` reads the corresponding MD file from `/sessions`.
-3. **Prompt**: `GeminiRequest` is built and queued.
-4. **Execution**: `Worker` reads `stdout` from the CLI and streams it to Discord.
-5. **Persistence**: Final response is appended back to the session MD file.
-6. **Logging**: Full prompts are logged to `bot.log`, while console shows summaries.
+1.  **Input**: User messages or commands are received by the `Handler`.
+2.  **Context Injection**:
+    *   **SOUL.md**: If `workspace/SOUL.md` exists, it is piped to the CLI's `stdin` as the first context block.
+    *   **Session History**: The content of the current session's Markdown file is piped to `stdin` after the SOUL.
+    *   **Workspace**: If a workspace path is set via the `workspace` command, it is passed to the CLI via the `--include-directories` flag.
+3.  **Execution**: The CLI is invoked with a system prompt and the latest message. Output is captured from `stdout` (for content) and `stderr` (for errors/debugging).
+4.  **Streaming**: Responses are buffered and sent to Discord in chunks (max 2000 chars) to ensure real-time feedback.
+5.  **Persistence**:
+    *   **Sessions**: Saved in `workspace/sessions/{timestamp}.md`.
+    *   **Logging**: Full CLI invocations are logged to `bot.log`.
+    *   **Title**: The first message of a session triggers an update of the H1 header in the session file to serve as a title.
+
+## 🚦 Status Indicators (Reactions)
+
+*   👀: Processing/Thinking.
+*   ⏳: Queue is full (3/3).
+*   ✅: Successfully responded and saved.
+*   ❌: Error encountered during execution.
