@@ -18,6 +18,8 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
   - `workspace [path]`: Set a specific folder for AI context (channel-specific).
   - `restart`: Restart the bot with confirmation.
   - `info`: Show detailed bot information, system status, and network info.
+  - `trigger [id]`: Manually execute a predefined task from the registry.
+- **Trigger Event System**: Support for predefined tasks that can be triggered manually by users or autonomously by the AI using the `[[trigger:id]]` pattern.
 - **State Persistence**: Automatically saves and restores active sessions and workspace settings across bot restarts using `state.json`.
 - **Queue System**: Handles concurrent requests efficiently with a sequential processing queue (up to 3 pending).
 - **Interactive Feedback**: Uses emoji reactions to show status:
@@ -34,6 +36,7 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
 ├── src/                # Rust source code
 ├── workspace/          # AI Workspace
 │   ├── SOUL.md         # AI instructions and personality
+│   ├── tasks.json      # Predefined task registry
 │   ├── sessions/       # Persistent session files
 │   │   ├── state.json  # Saved bot state (sessions/workspaces)
 │   │   └── {channel_id}/ # Per-channel session history

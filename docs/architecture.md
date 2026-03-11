@@ -64,11 +64,29 @@ sequenceDiagram
 | Module | Description | Key Functions |
 | :--- | :--- | :--- |
 | **main.rs** | Entry point. Initializes the bot, mpsc channel, and the background worker loop. Loads `state.json` to restore previous sessions. | `main()` |
-| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `resume`, `summary`, `workspace`, `restart`, `info`), request queuing, and state persistence to `state.json`. | `message()`, `ready()`, `save_state()` |
-| **gemini.rs** | Orchestrates the Gemini CLI. Handles stdin piping (SOUL.md + History), output streaming, and session updates. | `process_gemini_request()` |
+| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `resume`, `summary`, `workspace`, `restart`, `info`, `trigger`), request queuing, and state persistence to `state.json`. | `message()`, `ready()`, `save_state()` |
+| **gemini.rs** | Orchestrates the Gemini CLI. Handles stdin piping (SOUL.md + History), output streaming, session updates, and autonomous trigger detection. | `process_gemini_request()` |
 | **session.rs** | Manages persistent conversation history. Handles session creation and retrieval from per-channel directories in `workspace/sessions/{channel_id}/`. | `get_or_create_session()` |
 | **utils.rs** | Shared helper functions for logging and intelligent message splitting for Discord's limits. | `log_to_file()`, `split_message()` |
 | **types.rs** | Defines the `GeminiRequest` and `BotState` structs used for communication and state management. | `struct GeminiRequest`, `struct BotState` |
+
+## 🚀 Trigger Event System
+
+The Trigger Event System allows the bot to execute predefined tasks based on specific identifiers. These tasks are stored in `workspace/tasks.json` and consist of a unique ID and a corresponding prompt.
+
+### ⚙️ Mechanism
+
+1.  **Registry (`tasks.json`)**: A JSON file containing a list of tasks.
+    ```json
+    {
+      "tasks": [
+        { "id": "daily_report", "prompt": "Summarize today's activities." }
+      ]
+    }
+    ```
+2.  **Manual Trigger**: Users can invoke a task using the `!trigger <id>` command. The handler looks up the prompt in the registry and queues it as a `GeminiRequest`.
+3.  **Autonomous Trigger**: The AI can trigger its own next steps by including `[[trigger:<id>]]` in its response. The `gemini.rs` module uses regex to scan for this pattern and automatically re-queues the associated task.
+4.  **System-Initiated Requests**: `GeminiRequest` has been decoupled from requiring a direct user `Message` object, allowing the system or the AI to initiate requests using only a `ChannelId`.
 
 ## 📁 Data Flow & Persistence
 
