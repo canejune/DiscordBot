@@ -6,7 +6,9 @@ use std::collections::HashMap;
 
 pub struct GeminiRequest {
     pub ctx: Context,
-    pub msg: Message,
+    pub channel_id: ChannelId,
+    pub user_name: String,
+    pub msg: Option<Message>,
     pub session_path: String,
     pub soul_path: Option<String>,
     pub workspace_path: Option<String>,

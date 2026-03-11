@@ -5,11 +5,19 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::{interval, Duration, Instant};
+use tokio::sync::mpsc;
 use crate::types::GeminiRequest;
 use crate::utils::split_message;
+use regex::Regex;
 
-pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUsize>) {
+pub async fn process_gemini_request(
+    req: GeminiRequest, 
+    queue_size: Arc<AtomicUsize>,
+    queue_tx: mpsc::Sender<GeminiRequest>
+) {
     let ctx = req.ctx;
+    let channel_id = req.channel_id;
+    let user_name = req.user_name;
     let msg = req.msg;
     let session_path = req.session_path;
     let content = req.content;
@@ -20,12 +28,13 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
                              Your task is to respond specifically to the message below using the history (provided via stdin) for context.";
     
     let full_prompt = format!(
-        "{}\n\n[Latest Message]\nUser: {}\nGemini: ", 
+        "{}\n\n[Latest Message]\n{}: {}\nGemini: ", 
         system_instruction,
+        user_name,
         content
     );
 
-    let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+    let _ = channel_id.broadcast_typing(&ctx.http).await;
 
     let mut command = Command::new("gemini");
     command.arg("-y");
@@ -55,9 +64,11 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
         Err(e) => {
             let err_msg = format!("Failed to spawn Gemini CLI: {}", e);
             eprintln!("{}", err_msg);
-            let _ = msg.delete_reaction_emoji(&ctx.http, '👀').await;
-            let _ = msg.react(&ctx.http, '❌').await;
-            let _ = msg.channel_id.say(&ctx.http, &err_msg).await;
+            if let Some(m) = msg {
+                let _ = m.delete_reaction_emoji(&ctx.http, '👀').await;
+                let _ = m.react(&ctx.http, '❌').await;
+            }
+            let _ = channel_id.say(&ctx.http, &err_msg).await;
             queue_size.fetch_sub(1, Ordering::SeqCst);
             return;
         }
@@ -90,7 +101,7 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
     while !stdout_done || !stderr_done {
         tokio::select! {
             _ = heartbeat_interval.tick() => {
-                let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
+                let _ = channel_id.broadcast_typing(&ctx.http).await;
             }
             line = stdout_reader.next_line(), if !stdout_done => {
                 match line {
@@ -103,7 +114,7 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
                         if buffer.len() > 1000 || last_send.elapsed().as_secs() > 3 {
                             if !buffer.trim().is_empty() {
                                 for chunk in split_message(&buffer, 1900) {
-                                    let _ = msg.channel_id.say(&ctx.http, chunk).await;
+                                    let _ = channel_id.say(&ctx.http, chunk).await;
                                 }
                                 buffer.clear();
                                 last_send = Instant::now();
@@ -127,7 +138,7 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
 
     if !buffer.trim().is_empty() {
         for chunk in split_message(&buffer, 1900) {
-            let _ = msg.channel_id.say(&ctx.http, chunk).await;
+            let _ = channel_id.say(&ctx.http, chunk).await;
         }
     }
 
@@ -153,7 +164,7 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
                     }
                 }
             } else {
-                let _ = msg.channel_id.say(&ctx.http, "Gemini finished its task, but no response was generated. 😶").await;
+                let _ = channel_id.say(&ctx.http, "Gemini finished its task, but no response was generated. 😶").await;
             }
 
             if is_first_message {
@@ -163,21 +174,68 @@ pub async fn process_gemini_request(req: GeminiRequest, queue_size: Arc<AtomicUs
                     let _ = fs::write(&session_path, updated_content).await;
                 }
             }
-            let _ = msg.delete_reaction_emoji(&ctx.http, '👀').await;
-            let _ = msg.react(&ctx.http, '✅').await;
+            if let Some(m) = msg {
+                let _ = m.delete_reaction_emoji(&ctx.http, '👀').await;
+                let _ = m.react(&ctx.http, '✅').await;
+            }
+
+            // Autonomous Trigger Detection
+            let re = Regex::new(r"\[\[trigger:(?P<id>[^\]]+)\]\]").unwrap();
+            if let Some(caps) = re.captures(final_response_trimmed) {
+                let task_id = &caps["id"];
+                println!("Detected autonomous trigger: {}", task_id);
+                
+                let tasks_json = fs::read_to_string("workspace/tasks.json").await.unwrap_or_else(|_| "{\"tasks\": []}".to_string());
+                let v: serde_json::Value = serde_json::from_str(&tasks_json).unwrap_or(serde_json::json!({"tasks": []}));
+                let mut found_prompt = None;
+                if let Some(tasks) = v["tasks"].as_array() {
+                    for task in tasks {
+                        if task["id"] == task_id {
+                            found_prompt = task["prompt"].as_str().map(|s| s.to_string());
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(prompt) = found_prompt {
+                    let next_request = GeminiRequest {
+                        ctx: ctx.clone(),
+                        channel_id,
+                        user_name: "System".to_string(),
+                        msg: None,
+                        session_path: session_path.clone(),
+                        soul_path: req.soul_path.clone(),
+                        workspace_path: req.workspace_path.clone(),
+                        content: prompt,
+                        is_first_message: false,
+                    };
+                    
+                    queue_size.fetch_add(1, Ordering::SeqCst);
+                    if let Err(e) = queue_tx.send(next_request).await {
+                        eprintln!("Failed to send autonomous trigger to queue: {}", e);
+                        queue_size.fetch_sub(1, Ordering::SeqCst);
+                    }
+                } else {
+                    let _ = channel_id.say(&ctx.http, format!("Error: Autonomous trigger ID `{}` not found.", task_id)).await;
+                }
+            }
         }
         Ok(s) => {
-            let _ = msg.delete_reaction_emoji(&ctx.http, '👀').await;
-            let _ = msg.react(&ctx.http, '❌').await;
-            let _ = msg.channel_id.say(&ctx.http, format!("Gemini CLI exited with failure: {}", s)).await;
+            if let Some(m) = msg {
+                let _ = m.delete_reaction_emoji(&ctx.http, '👀').await;
+                let _ = m.react(&ctx.http, '❌').await;
+            }
+            let _ = channel_id.say(&ctx.http, format!("Gemini CLI exited with failure: {}", s)).await;
             if !final_stderr.is_empty() {
-                let _ = msg.channel_id.say(&ctx.http, format!("Stderr: ```\n{}\n```", final_stderr)).await;
+                let _ = channel_id.say(&ctx.http, format!("Stderr: ```\n{}\n```", final_stderr)).await;
             }
         }
         Err(e) => {
-            let _ = msg.delete_reaction_emoji(&ctx.http, '👀').await;
-            let _ = msg.react(&ctx.http, '❌').await;
-            let _ = msg.channel_id.say(&ctx.http, format!("Process error: {}", e)).await;
+            if let Some(m) = msg {
+                let _ = m.delete_reaction_emoji(&ctx.http, '👀').await;
+                let _ = m.react(&ctx.http, '❌').await;
+            }
+            let _ = channel_id.say(&ctx.http, format!("Process error: {}", e)).await;
         }
     }
 

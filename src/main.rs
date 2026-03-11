@@ -42,9 +42,10 @@ async fn main() {
         }
     }
 
+    let tx_worker = tx.clone();
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
-            process_gemini_request(req, Arc::clone(&worker_queue_size)).await;
+            process_gemini_request(req, Arc::clone(&worker_queue_size), tx_worker.clone()).await;
         }
     });
 

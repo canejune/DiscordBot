@@ -99,6 +99,7 @@ impl EventHandler for Handler {
                                  - `list`: Show saved session files for this channel.\n\
                                  - `resume [session]`: Continue a specific session.\n\
                                  - `summary [session]`: Get an AI summary of a session.\n\
+                                 - `trigger [id]`: Execute a predefined task (trigger).\n\
                                  - `workspace [path]`: Set a folder for AI context.\n\
                                  - `restart`: Restart the bot with confirmation.\n\
                                  - `info`: Show bot info, system, and network.\n\
@@ -257,7 +258,9 @@ impl EventHandler for Handler {
 
                         let request = GeminiRequest {
                             ctx: ctx.clone(),
-                            msg: msg.clone(),
+                            channel_id: msg.channel_id,
+                            user_name: msg.author.name.clone(),
+                            msg: Some(msg.clone()),
                             session_path: path,
                             soul_path,
                             workspace_path,
@@ -273,6 +276,81 @@ impl EventHandler for Handler {
                     }
                 } else {
                     let _ = msg.channel_id.say(&ctx.http, "Usage: `summary [session_filename]`").await;
+                }
+                return;
+            }
+            "trigger" => {
+                if let Some(task_id) = parts.get(1) {
+                    let tasks_json = fs::read_to_string("workspace/tasks.json").await.unwrap_or_else(|_| "{\"tasks\": []}".to_string());
+                    let v: serde_json::Value = serde_json::from_str(&tasks_json).unwrap_or(serde_json::json!({"tasks": []}));
+                    let mut found_prompt = None;
+                    if let Some(tasks) = v["tasks"].as_array() {
+                        for task in tasks {
+                            if task["id"] == *task_id {
+                                found_prompt = task["prompt"].as_str().map(|s| s.to_string());
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some(prompt) = found_prompt {
+                        let _ = msg.react(&ctx.http, '👀').await;
+                        let session_path = {
+                            let sessions = self.active_sessions.lock().await;
+                            if let Some(path) = sessions.get(&msg.channel_id) {
+                                if fs::metadata(path).await.is_ok() {
+                                    path.clone()
+                                } else {
+                                    drop(sessions);
+                                    let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                                    self.save_state().await;
+                                    path
+                                }
+                            } else {
+                                drop(sessions);
+                                let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                                self.save_state().await;
+                                path
+                            }
+                        };
+                        
+                        let is_first_message = if let Ok(metadata) = fs::metadata(&session_path).await {
+                            metadata.len() < 100
+                        } else {
+                            true
+                        };
+
+                        let workspaces = self.workspace_folders.lock().await;
+                        let workspace_path = workspaces.get(&msg.channel_id).cloned();
+
+                        let soul_path = if fs::metadata("workspace/SOUL.md").await.is_ok() {
+                            Some("workspace/SOUL.md".to_string())
+                        } else {
+                            None
+                        };
+
+                        self.queue_size.fetch_add(1, Ordering::SeqCst);
+                        let request = GeminiRequest {
+                            ctx,
+                            channel_id: msg.channel_id,
+                            user_name: msg.author.name.clone(),
+                            msg: Some(msg.clone()),
+                            session_path,
+                            soul_path,
+                            workspace_path,
+                            content: prompt,
+                            is_first_message,
+                        };
+
+                        if let Err(e) = self.queue_tx.send(request).await {
+                            log_to_file("ERROR", &format!("Failed to send triggered request to queue: {}", e)).await;
+                            self.queue_size.fetch_sub(1, Ordering::SeqCst);
+                        }
+                    } else {
+                        let _ = msg.channel_id.say(&ctx.http, format!("Error: Trigger ID `{}` not found.", task_id)).await;
+                    }
+                } else {
+                    let _ = msg.channel_id.say(&ctx.http, "Usage: `trigger [task_id]`").await;
                 }
                 return;
             }
@@ -357,7 +435,9 @@ impl EventHandler for Handler {
         self.queue_size.fetch_add(1, Ordering::SeqCst);
         let request = GeminiRequest {
             ctx,
-            msg,
+            channel_id: msg.channel_id,
+            user_name: msg.author.name.clone(),
+            msg: Some(msg),
             session_path,
             soul_path,
             workspace_path,
