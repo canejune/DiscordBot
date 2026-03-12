@@ -332,7 +332,7 @@ pub async fn process_gemini_request(
                 let summary = &caps["summary"];
                 if let Ok(channel_name) = channel_id.name(&http).await {
                     let sanitized = crate::utils::sanitize_filename(&channel_name);
-                    let link_path = format!("workspace/channels/{}/link.md", sanitized);
+                    let link_path = format!("workspace/channels/{}/links.md", sanitized);
                     
                     let mut link_file = OpenOptions::new()
                         .create(true)

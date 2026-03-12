@@ -119,7 +119,7 @@ impl EventHandler for Handler {
         let url_re = Regex::new(r"(https?://[^\s]+)").unwrap();
         if url_re.is_match(&content_str) {
             let channel_dir = self.get_channel_dir(&ctx, msg.channel_id).await;
-            let link_md_path = format!("{}/link.md", channel_dir);
+            let link_md_path = format!("{}/links.md", channel_dir);
             
             if let Err(e) = fs::create_dir_all(&channel_dir).await {
                 log_to_file("ERROR", &format!("Failed to create channel directory: {}", e)).await;
