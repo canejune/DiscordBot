@@ -24,6 +24,7 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
   - `untrigger [id]`: Stop a scheduled task for the current channel.
   - `triggers`: List all available tasks and active schedules.
 - **Attachment Storage & AI Indexing**: Automatically saves uploaded files to the channel's bank and generates an AI-powered summary in `index.md`. The AI can also use these files as context for answering questions.
+- **Link Detection & AI Summarization**: Automatically identifies URLs in the chat, stores them in `link.md`, and uses the AI (via the `fetch_webpage` skill) to generate and record concise one-sentence summaries of the shared content.
 - **AI File Pushing**: The AI can "push" files from the bank back to the user using the `[[download:filename]]` pattern.
 - **Trigger Event System**: Support for predefined tasks that can be triggered manually by users or autonomously by the AI using the `[[trigger:id]]` pattern. Tasks with an `interval` field in `tasks.json` are automatically scheduled and managed.
 - **State Persistence**: Automatically saves and restores active sessions and workspace settings across bot restarts using `state.json`.
@@ -51,7 +52,9 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
 │   │       └── index.md  # AI-generated index of stored files
 │   └── skills/         # Modular skill scripts (Python, etc.)
 │       ├── download_file/# Push files from bank back to chat
+│       ├── fetch_webpage/# Fetch and summarize webpage content
 │       ├── get_stock_price/
+│       ├── github/       # Authenticated Git operations
 │       ├── show_bank/    # Display files in channel bank
 │       └── ...
 ├── Cargo.toml          # Rust dependencies

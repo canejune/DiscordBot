@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, Mutex};
 use tokio::process::Command;
 use crate::types::{GeminiRequest, ScheduledTask};
@@ -15,6 +16,7 @@ use crate::utils::log_to_file;
 use crate::session::get_or_create_session;
 use serde_json;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 
 pub struct Handler {
     pub active_sessions: Mutex<HashMap<ChannelId, String>>,
@@ -112,6 +114,59 @@ impl EventHandler for Handler {
         }
 
         let content_str = msg.content.trim().to_string();
+        
+        // Link detection and storage
+        let url_re = Regex::new(r"(https?://[^\s]+)").unwrap();
+        if url_re.is_match(&content_str) {
+            let channel_dir = self.get_channel_dir(&ctx, msg.channel_id).await;
+            let link_md_path = format!("{}/link.md", channel_dir);
+            
+            if let Err(e) = fs::create_dir_all(&channel_dir).await {
+                log_to_file("ERROR", &format!("Failed to create channel directory: {}", e)).await;
+            } else {
+                for cap in url_re.captures_iter(&content_str) {
+                    let url = &cap[0];
+                    if let Ok(mut file) = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&link_md_path)
+                        .await 
+                    {
+                        if let Ok(metadata) = fs::metadata(&link_md_path).await {
+                            if metadata.len() == 0 {
+                                let _ = file.write_all(b"# Channel Link Summaries\n\n").await;
+                            }
+                        }
+                        
+                        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                        let _ = file.write_all(format!("- [{}] Link: {}\n", timestamp, url).as_bytes()).await;
+                        
+                        // Send request to AI for summary using the fetch_webpage skill
+                        let link_request = GeminiRequest {
+                            http: ctx.http.clone(),
+                            channel_id: msg.channel_id,
+                            user_name: msg.author.name.clone(),
+                            msg: Some(msg.clone()),
+                            session_path: get_or_create_session(&self.active_sessions, msg.channel_id, &channel_dir).await,
+                            soul_path: if fs::metadata("workspace/SOUL.md").await.is_ok() { Some("workspace/SOUL.md".to_string()) } else { None },
+                            workspace_path: self.workspace_folders.lock().await.get(&msg.channel_id).cloned(),
+                            content: format!("Please visit this link using the fetch_webpage skill and provide a very concise one-sentence summary. \
+                                              You MUST wrap your one-sentence summary in the following tag: [[link_summary: <summary_here> ]]. \
+                                              Link: {}", url),
+                            is_first_message: false,
+                            attachment_paths: vec![],
+                            is_indexing: false,
+                        };
+
+                        if self.queue_size.load(Ordering::SeqCst) < 3 {
+                            self.queue_size.fetch_add(1, Ordering::SeqCst);
+                            let _ = self.queue_tx.send(link_request).await;
+                        }
+                    }
+                }
+            }
+        }
+
         let parts: Vec<&str> = content_str.split_whitespace().collect();
         let command = parts.get(0).map(|s| s.to_lowercase()).unwrap_or_default();
 

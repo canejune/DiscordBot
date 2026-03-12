@@ -64,8 +64,8 @@ sequenceDiagram
 | Module | Description | Key Functions |
 | :--- | :--- | :--- |
 | **main.rs** | Entry point. Initializes the bot, mpsc channel, and a background scheduler loop that checks for pending tasks every 30 seconds. Loads `state.json` to restore previous sessions and schedules. | `main()` |
-| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `bank`, `download`, `resume`, `summary`, `workspace`, `terminate`, `info`, `trigger`, `untrigger`, `triggers`), attachment storage, request queuing, and state persistence. | `message()`, `ready()`, `save_state()` |
-| **gemini.rs** | Orchestrates the Gemini CLI. Handles context injection (SOUL, History, Attachments), output streaming, AI-driven file indexing, and autonomous trigger/download detection. | `process_gemini_request()` |
+| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `bank`, `download`, `resume`, `summary`, `workspace`, `terminate`, `info`, `trigger`, `untrigger`, `triggers`), attachment storage, link detection, request queuing, and state persistence. | `message()`, `ready()`, `save_state()` |
+| **gemini.rs** | Orchestrates the Gemini CLI. Handles context injection (SOUL, History, Attachments), output streaming, AI-driven file indexing, autonomous trigger/download detection, and link summary extraction. | `process_gemini_request()` |
 | **session.rs** | Manages persistent conversation history. Handles session creation and retrieval from per-channel directories in `workspace/channels/{channel_name}/sessions/`. | `get_or_create_session()` |
 | **utils.rs** | Shared helper functions for logging and intelligent message splitting for Discord's limits. | `log_to_file()`, `split_message()` |
 | **types.rs** | Defines the `GeminiRequest` and `BotState` structs used for communication and state management. | `struct GeminiRequest`, `struct BotState` |
@@ -77,6 +77,7 @@ The bot's capabilities are extended through modular skills located in `workspace
 | Skill | Description |
 | :--- | :--- |
 | **download_file** | Allows the AI to "push" files from the bank to the user. |
+| **fetch_webpage** | Allows the AI to visit a URL and fetch its content for analysis. |
 | **get_stock_price** | Fetches real-time or historical stock prices. |
 | **github** | Authenticated Git operations (push, etc.). |
 | **show_bank** | Displays a summary of files stored in the channel's bank. |
@@ -128,6 +129,15 @@ The bot features an automated system for managing files uploaded via Discord.
 2.  **AI Indexing**: Upon successful storage, the bot automatically triggers an internal AI request to read the file and generate a concise one-sentence summary. This summary is appended to `workspace/channels/{channel_name}/index.md`.
 3.  **Contextual Awareness**: If a user message contains attachments, the bot reads the content of all attachments and prepends them to the AI's prompt. This allows the AI to answer questions about the uploaded files in real-time.
 4.  **AI File Pushing**: The AI can autonomously decide to send a file from the bank back to the user by outputting the `[[download:filename]]` pattern. The `gemini.rs` module detects this and triggers a file upload to the Discord channel.
+
+## 🔗 Link Detection & AI Summarization
+
+The bot automatically detects and processes URLs shared in any channel.
+
+1.  **Link Detection**: The `handler.rs` module uses regex to identify `http://` or `https://` links in incoming messages.
+2.  **Persistent Storage**: Detected links are saved with a timestamp to `workspace/channels/{channel_name}/link.md`.
+3.  **Autonomous Summarization**: Upon detecting a link, the bot automatically sends a request to the AI (via the `fetch_webpage` skill) to retrieve and summarize the content of the webpage.
+4.  **Summary Storage**: The AI includes its summary in a `[[link_summary: ... ]]` tag. The `gemini.rs` module extracts this summary and appends it to the channel's `link.md` file, providing a historical record of all shared content.
 
 ## 💾 Persistence
     *   **Sessions**: Saved in `workspace/channels/{channel_name}/sessions/{timestamp}.md`. This ensures that each channel maintains its own independent conversation history.

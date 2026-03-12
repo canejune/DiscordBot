@@ -325,6 +325,32 @@ pub async fn process_gemini_request(
                     }
                 }
             }
+
+            // Link Summary Logic: [[link_summary: ... ]]
+            let link_summary_re = Regex::new(r"\[\[link_summary:(?P<summary>[^\]]+)\]\]").unwrap();
+            for caps in link_summary_re.captures_iter(final_response_trimmed) {
+                let summary = &caps["summary"];
+                if let Ok(channel_name) = channel_id.name(&http).await {
+                    let sanitized = crate::utils::sanitize_filename(&channel_name);
+                    let link_path = format!("workspace/channels/{}/link.md", sanitized);
+                    
+                    let mut link_file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&link_path)
+                        .await
+                        .unwrap();
+                    
+                    if let Ok(metadata) = fs::metadata(&link_path).await {
+                        if metadata.len() == 0 {
+                            let _ = link_file.write_all(b"# Channel Link Summaries\n\n").await;
+                        }
+                    }
+                    
+                    let summary_entry = format!("- Summary: {}\n\n", summary.trim());
+                    let _ = link_file.write_all(summary_entry.as_bytes()).await;
+                }
+            }
         }
         Ok(s) => {
             if let Some(m) = msg {
