@@ -41,9 +41,14 @@ pub async fn process_gemini_request(
         }
     }
 
-    let system_instruction = "You are a helpful Discord bot. Above is the conversation history for context. \
+    let system_instruction = "You are a helpful Discord bot with access to various skills in your workspace. \
+                             Above is the conversation history for context. \
                              Do NOT repeat previous answers or the 'Gemini:' prefix in your response. \
-                             Your task is to respond specifically to the message below using the history (provided via stdin) for context.";
+                             Your task is to respond specifically to the message below using the history (provided via stdin) for context. \
+                             If you need to perform an action (like sending a file or triggering a task), you MUST include the appropriate tag in your final response: \
+                             - To send a file from the bank: `[[download:filename]]` \
+                             - To trigger a task: `[[trigger:task_id]]` \
+                             You can use the provided skills to find filenames or task IDs.";
     
     let full_prompt = format!(
         "{}\n\n[Latest Message]\n{}: {}\nGemini: ", 

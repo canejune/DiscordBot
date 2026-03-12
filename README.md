@@ -13,6 +13,8 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
   - `help`: Show the command guide.
   - `new`: Reset the conversation and start fresh.
   - `list`: View session files for the current channel.
+  - `bank`: View stored files in the channel's bank folder.
+  - `download [filename]`: Download a file from the channel's bank.
   - `resume [session]`: Continue a previous session from its file.
   - `summary [session]`: Get an AI-generated summary of a specific session.
   - `workspace [path]`: Set a specific folder for AI context (channel-specific).
@@ -21,6 +23,8 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
   - `trigger [id]`: Manually execute a predefined task or schedule it if it has an interval.
   - `untrigger [id]`: Stop a scheduled task for the current channel.
   - `triggers`: List all available tasks and active schedules.
+- **Attachment Storage & AI Indexing**: Automatically saves uploaded files to the channel's bank and generates an AI-powered summary in `index.md`. The AI can also use these files as context for answering questions.
+- **AI File Pushing**: The AI can "push" files from the bank back to the user using the `[[download:filename]]` pattern.
 - **Trigger Event System**: Support for predefined tasks that can be triggered manually by users or autonomously by the AI using the `[[trigger:id]]` pattern. Tasks with an `interval` field in `tasks.json` are automatically scheduled and managed.
 - **State Persistence**: Automatically saves and restores active sessions and workspace settings across bot restarts using `state.json`.
 - **Queue System**: Handles concurrent requests efficiently with a sequential processing queue (up to 3 pending).
@@ -41,10 +45,12 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
 │   ├── tasks.json      # Predefined task registry
 │   ├── state.json      # Saved bot state (sessions/workspaces)
 │   ├── channels/       # Per-channel persistent data
-│   │   └── {channel_id}/
+│   │   └── {channel_name}/
 │   │       ├── bank/     # Channel-specific file storage
-│   │       └── sessions/ # Channel-specific session history
+│   │       ├── sessions/ # Channel-specific session history
+│   │       └── index.md  # AI-generated index of stored files
 │   └── skills/         # Modular skill scripts (Python, etc.)
+│       ├── download_file/# Push files from bank back to chat
 │       ├── get_stock_price/
 │       ├── show_bank/    # Display files in channel bank
 │       └── ...

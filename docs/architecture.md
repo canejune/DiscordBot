@@ -64,8 +64,8 @@ sequenceDiagram
 | Module | Description | Key Functions |
 | :--- | :--- | :--- |
 | **main.rs** | Entry point. Initializes the bot, mpsc channel, and a background scheduler loop that checks for pending tasks every 30 seconds. Loads `state.json` to restore previous sessions and schedules. | `main()` |
-| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `resume`, `summary`, `workspace`, `terminate`, `info`, `trigger`, `untrigger`, `triggers`), request queuing, and state persistence to `state.json`. | `message()`, `ready()`, `save_state()` |
-| **gemini.rs** | Orchestrates the Gemini CLI. Handles stdin piping (SOUL.md + History), output streaming, session updates, and autonomous trigger detection with optional scheduling. | `process_gemini_request()` |
+| **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `bank`, `download`, `resume`, `summary`, `workspace`, `terminate`, `info`, `trigger`, `untrigger`, `triggers`), attachment storage, request queuing, and state persistence. | `message()`, `ready()`, `save_state()` |
+| **gemini.rs** | Orchestrates the Gemini CLI. Handles context injection (SOUL, History, Attachments), output streaming, AI-driven file indexing, and autonomous trigger/download detection. | `process_gemini_request()` |
 | **session.rs** | Manages persistent conversation history. Handles session creation and retrieval from per-channel directories in `workspace/channels/{channel_name}/sessions/`. | `get_or_create_session()` |
 | **utils.rs** | Shared helper functions for logging and intelligent message splitting for Discord's limits. | `log_to_file()`, `split_message()` |
 | **types.rs** | Defines the `GeminiRequest` and `BotState` structs used for communication and state management. | `struct GeminiRequest`, `struct BotState` |
@@ -76,6 +76,7 @@ The bot's capabilities are extended through modular skills located in `workspace
 
 | Skill | Description |
 | :--- | :--- |
+| **download_file** | Allows the AI to "push" files from the bank to the user. |
 | **get_stock_price** | Fetches real-time or historical stock prices. |
 | **github** | Authenticated Git operations (push, etc.). |
 | **show_bank** | Displays a summary of files stored in the channel's bank. |
@@ -118,7 +119,17 @@ The bot runs a background loop (in `main.rs`) that checks every 30 seconds for s
     *   **Workspace**: If a workspace path is set via the `workspace` command, it is passed to the CLI via the `--include-directories` flag.
 3.  **Execution**: The CLI is invoked with a system prompt and the latest message. Output is captured from `stdout` (for content) and `stderr` (for errors/debugging).
 4.  **Streaming**: Responses are buffered and sent to Discord in chunks (max 2000 chars) to ensure real-time feedback.
-5.  **Persistence**:
+
+## 📁 File Storage & AI Indexing
+
+The bot features an automated system for managing files uploaded via Discord.
+
+1.  **Automatic Storage**: Every file sent to a channel is automatically downloaded and stored in `workspace/channels/{channel_name}/bank/`.
+2.  **AI Indexing**: Upon successful storage, the bot automatically triggers an internal AI request to read the file and generate a concise one-sentence summary. This summary is appended to `workspace/channels/{channel_name}/index.md`.
+3.  **Contextual Awareness**: If a user message contains attachments, the bot reads the content of all attachments and prepends them to the AI's prompt. This allows the AI to answer questions about the uploaded files in real-time.
+4.  **AI File Pushing**: The AI can autonomously decide to send a file from the bank back to the user by outputting the `[[download:filename]]` pattern. The `gemini.rs` module detects this and triggers a file upload to the Discord channel.
+
+## 💾 Persistence
     *   **Sessions**: Saved in `workspace/channels/{channel_name}/sessions/{timestamp}.md`. This ensures that each channel maintains its own independent conversation history.
     *   **State**: The bot's global state (active session and current workspace for each channel) is saved to `workspace/state.json` whenever it changes. This allows the bot to resume seamlessly after a restart.
     *   **Logging**: Full CLI invocations are logged to `bot.log`.

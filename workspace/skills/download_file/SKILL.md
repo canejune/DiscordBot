@@ -16,7 +16,7 @@ This skill can be used when the user asks for:
 
 ## Usage
 
-When the user requests to download a file from the bank, you can execute the script:
-`python3 workspace/skills/download_file/scripts/download_file.py [filename]`
-
-The script will simply output `[[download:filename]]`, and the bot will handle the actual file upload.
+When the user requests to download a file from the bank, you MUST:
+1. Execute the script: `python3 workspace/skills/download_file/scripts/download_file.py [filename]`
+2. The script returns the required tag: `[[download:filename]]`.
+3. You **MUST** include this exact tag in your final response to the user so the bot can process the download and upload the file to Discord.
