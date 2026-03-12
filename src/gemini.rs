@@ -1,3 +1,4 @@
+use serenity::all::{CreateAttachment, CreateMessage};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::fs;
@@ -292,6 +293,31 @@ pub async fn process_gemini_request(
                     }
                 } else {
                     let _ = channel_id.say(&http, format!("Error: Autonomous trigger ID `{}` not found.", task_id)).await;
+                }
+            }
+
+            // AI Download Logic: [[download:filename]]
+            let download_re = Regex::new(r"\[\[download:(?P<file>[^\]]+)\]\]").unwrap();
+            for caps in download_re.captures_iter(final_response_trimmed) {
+                let filename = &caps["file"];
+                if let Ok(channel_name) = channel_id.name(&http).await {
+                    let sanitized = crate::utils::sanitize_filename(&channel_name);
+                    let file_path = format!("workspace/channels/{}/bank/{}", sanitized, filename);
+                    
+                    if fs::metadata(&file_path).await.is_ok() {
+                        match CreateAttachment::path(&file_path).await {
+                            Ok(attachment) => {
+                                if let Err(e) = channel_id.send_files(&http, vec![attachment], CreateMessage::new()).await {
+                                    eprintln!("AI Download: Failed to send file {}: {}", filename, e);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("AI Download: Failed to create attachment for {}: {}", filename, e);
+                            }
+                        }
+                    } else {
+                        let _ = channel_id.say(&http, format!("AI tried to send `{}`, but it's not in the bank. ❌", filename)).await;
+                    }
                 }
             }
         }

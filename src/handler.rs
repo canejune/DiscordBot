@@ -1,3 +1,4 @@
+use serenity::all::{CreateAttachment, CreateMessage};
 use serenity::async_trait;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
@@ -120,6 +121,7 @@ impl EventHandler for Handler {
                                  - `new`: Start a new conversation session.\n\
                                  - `list`: Show saved session files for this channel.\n\
                                  - `bank`: Show stored files in the channel's bank folder.\n\
+                                 - `download [filename]`: Download a file from the channel's bank.\n\
                                  - `resume [session]`: Continue a specific session.\n\
                                  - `summary [session]`: Get an AI summary of a session.\n\
                                  - `trigger [id]`: Execute a predefined task. If it has an interval, it schedules it.\n\
@@ -131,6 +133,31 @@ impl EventHandler for Handler {
                                  - `help`: Show this help message.\n\n\
                                  *Any other message will be treated as chat input.*";
                 let _ = msg.channel_id.say(&ctx.http, help_text).await;
+                return;
+            }
+            "download" => {
+                if let Some(filename) = parts.get(1) {
+                    let file_path = format!("{}/bank/{}", channel_dir, filename);
+                    if fs::metadata(&file_path).await.is_ok() {
+                        let _ = msg.react(&ctx.http, '📥').await;
+                        match CreateAttachment::path(&file_path).await {
+                            Ok(attachment) => {
+                                if let Err(e) = msg.channel_id.send_files(&ctx.http, vec![attachment], CreateMessage::new()).await {
+                                    log_to_file("ERROR", &format!("Failed to send file {}: {}", filename, e)).await;
+                                    let _ = msg.channel_id.say(&ctx.http, format!("Failed to send file `{}` ❌", filename)).await;
+                                }
+                            }
+                            Err(e) => {
+                                log_to_file("ERROR", &format!("Failed to create attachment for {}: {}", filename, e)).await;
+                                let _ = msg.channel_id.say(&ctx.http, format!("Failed to prepare file `{}` for download ❌", filename)).await;
+                            }
+                        }
+                    } else {
+                        let _ = msg.channel_id.say(&ctx.http, format!("Error: File `{}` not found in the bank.", filename)).await;
+                    }
+                } else {
+                    let _ = msg.channel_id.say(&ctx.http, "Usage: `download [filename]`").await;
+                }
                 return;
             }
             "bank" => {
