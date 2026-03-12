@@ -206,7 +206,12 @@ pub async fn process_gemini_request(
                         }
                         
                         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-                        let index_entry = format!("- [{}] {}\n", timestamp, final_response_trimmed);
+                        let index_entry_content = if let Some(pos) = final_response_trimmed.find('[') {
+                            &final_response_trimmed[pos..]
+                        } else {
+                            final_response_trimmed
+                        };
+                        let index_entry = format!("- [{}] {}\n", timestamp, index_entry_content);
                         let _ = index_file.write_all(index_entry.as_bytes()).await;
                     }
                 }

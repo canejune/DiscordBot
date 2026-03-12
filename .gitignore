@@ -1,6 +1,8 @@
 /target
 .env
 workspace/sessions/
+workspace/channels/
+workspace/state.json
 workspace/skills/**/.venv/
 bot.log
 package-lock.json

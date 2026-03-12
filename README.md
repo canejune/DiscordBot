@@ -39,10 +39,15 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
 ├── workspace/          # AI Workspace
 │   ├── SOUL.md         # AI instructions and personality
 │   ├── tasks.json      # Predefined task registry
-│   ├── sessions/       # Persistent session files
-│   │   ├── state.json  # Saved bot state (sessions/workspaces)
-│   │   └── {channel_id}/ # Per-channel session history
+│   ├── state.json      # Saved bot state (sessions/workspaces)
+│   ├── channels/       # Per-channel persistent data
+│   │   └── {channel_id}/
+│   │       ├── bank/     # Channel-specific file storage
+│   │       └── sessions/ # Channel-specific session history
 │   └── skills/         # Modular skill scripts (Python, etc.)
+│       ├── get_stock_price/
+│       ├── show_bank/    # Display files in channel bank
+│       └── ...
 ├── Cargo.toml          # Rust dependencies
 └── README.md           # Documentation
 ```

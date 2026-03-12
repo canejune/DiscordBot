@@ -70,6 +70,17 @@ sequenceDiagram
 | **utils.rs** | Shared helper functions for logging and intelligent message splitting for Discord's limits. | `log_to_file()`, `split_message()` |
 | **types.rs** | Defines the `GeminiRequest` and `BotState` structs used for communication and state management. | `struct GeminiRequest`, `struct BotState` |
 
+## 🧩 Available Skills
+
+The bot's capabilities are extended through modular skills located in `workspace/skills/`.
+
+| Skill | Description |
+| :--- | :--- |
+| **get_stock_price** | Fetches real-time or historical stock prices. |
+| **github** | Authenticated Git operations (push, etc.). |
+| **show_bank** | Displays a summary of files stored in the channel's bank. |
+| **trigger_manager** | Manages predefined tasks and schedules. |
+
 ## 🚀 Trigger Event System
 
 The Trigger Event System allows the bot to execute predefined tasks based on specific identifiers. These tasks are stored in `workspace/tasks.json` and consist of a unique ID and a corresponding prompt.
