@@ -1,6 +1,12 @@
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
+pub fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 pub async fn log_to_file(level: &str, content: &str) {
     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     let log_entry = format!("[{}] [{}] {}\n", timestamp, level, content);

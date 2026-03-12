@@ -25,6 +25,12 @@ pub struct Handler {
 }
 
 impl Handler {
+    async fn get_channel_dir(&self, ctx: &Context, channel_id: ChannelId) -> String {
+        let channel_name = channel_id.name(&ctx).await.unwrap_or_else(|_| "unknown".to_string());
+        let sanitized = crate::utils::sanitize_filename(&channel_name);
+        format!("workspace/channels/{}", sanitized)
+    }
+
     async fn save_state(&self) {
         let active_sessions = self.active_sessions.lock().await.clone();
         let workspace_folders = self.workspace_folders.lock().await.clone();
@@ -35,7 +41,7 @@ impl Handler {
             scheduled_tasks,
         };
         if let Ok(json) = serde_json::to_string_pretty(&state) {
-            let _ = fs::write("workspace/sessions/state.json", json).await;
+            let _ = fs::write("workspace/state.json", json).await;
         }
     }
 }
@@ -47,6 +53,63 @@ impl EventHandler for Handler {
             return;
         }
 
+        let channel_dir = self.get_channel_dir(&ctx, msg.channel_id).await;
+
+        let mut attached_files = Vec::new();
+
+        // Handle attachments: store files in workspace/channels/{channel_name}/bank/
+        if !msg.attachments.is_empty() {
+            let bank_dir = format!("{}/bank", channel_dir);
+            if let Err(e) = fs::create_dir_all(&bank_dir).await {
+                log_to_file("ERROR", &format!("Failed to create bank directory: {}", e)).await;
+            } else {
+                for attachment in &msg.attachments {
+                    let file_path = format!("{}/{}", bank_dir, attachment.filename);
+                    match attachment.download().await {
+                        Ok(content) => {
+                            if let Err(e) = fs::write(&file_path, content).await {
+                                log_to_file("ERROR", &format!("Failed to save attachment {}: {}", attachment.filename, e)).await;
+                                let _ = msg.channel_id.say(&ctx.http, format!("Failed to save file: `{}` ❌", attachment.filename)).await;
+                            } else {
+                                log_to_file("STATUS", &format!("Saved attachment {} for channel {}", attachment.filename, msg.channel_id)).await;
+                                let _ = msg.channel_id.say(&ctx.http, format!("File `{}` stored in bank! 💾", attachment.filename)).await;
+                                attached_files.push(file_path.clone());
+
+                                // Indexing: read file with AI and update index.md
+                                let indexing_request = GeminiRequest {
+                                    http: ctx.http.clone(),
+                                    channel_id: msg.channel_id,
+                                    user_name: msg.author.name.clone(),
+                                    msg: Some(msg.clone()),
+                                    session_path: get_or_create_session(&self.active_sessions, msg.channel_id, &channel_dir).await,
+                                    soul_path: if fs::metadata("workspace/SOUL.md").await.is_ok() { Some("workspace/SOUL.md".to_string()) } else { None },
+                                    workspace_path: self.workspace_folders.lock().await.get(&msg.channel_id).cloned(),
+                                    content: format!("Please provide a very concise one-sentence summary of the following file content for an index file. Format: [{}]: [Summary]", attachment.filename),
+                                    is_first_message: false,
+                                    attachment_paths: vec![file_path],
+                                    is_indexing: true,
+                                };
+
+                                if self.queue_size.load(Ordering::SeqCst) < 3 {
+                                    self.queue_size.fetch_add(1, Ordering::SeqCst);
+                                    let _ = self.queue_tx.send(indexing_request).await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log_to_file("ERROR", &format!("Failed to download attachment {}: {}", attachment.filename, e)).await;
+                            let _ = msg.channel_id.say(&ctx.http, format!("Failed to download file: `{}` ❌", attachment.filename)).await;
+                        }
+                    }
+                }
+            }
+            
+            // If message is only attachments (no text), return early
+            if msg.content.trim().is_empty() {
+                return;
+            }
+        }
+
         let content_str = msg.content.trim().to_string();
         let parts: Vec<&str> = content_str.split_whitespace().collect();
         let command = parts.get(0).map(|s| s.to_lowercase()).unwrap_or_default();
@@ -56,6 +119,7 @@ impl EventHandler for Handler {
                 let help_text = "**Gemini Bot Commands:**\n\
                                  - `new`: Start a new conversation session.\n\
                                  - `list`: Show saved session files for this channel.\n\
+                                 - `bank`: Show stored files in the channel's bank folder.\n\
                                  - `resume [session]`: Continue a specific session.\n\
                                  - `summary [session]`: Get an AI summary of a session.\n\
                                  - `trigger [id]`: Execute a predefined task. If it has an interval, it schedules it.\n\
@@ -67,6 +131,35 @@ impl EventHandler for Handler {
                                  - `help`: Show this help message.\n\n\
                                  *Any other message will be treated as chat input.*";
                 let _ = msg.channel_id.say(&ctx.http, help_text).await;
+                return;
+            }
+            "bank" => {
+                let mut response = String::from("**Bank files for this channel:**\n");
+                let bank_dir = format!("{}/bank", channel_dir);
+                if let Ok(mut entries) = fs::read_dir(&bank_dir).await {
+                    let mut count = 0;
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let file_name = entry.file_name().to_string_lossy().into_owned();
+                        if let Ok(metadata) = entry.metadata().await {
+                            let size = metadata.len();
+                            let size_str = if size < 1024 {
+                                format!("{} B", size)
+                            } else if size < 1024 * 1024 {
+                                format!("{:.2} KB", size as f64 / 1024.0)
+                            } else {
+                                format!("{:.2} MB", size as f64 / (1024.0 * 1024.0))
+                            };
+                            response.push_str(&format!("- `{}` ({})\n", file_name, size_str));
+                            count += 1;
+                        }
+                    }
+                    if count == 0 {
+                        response.push_str("No files in the bank.");
+                    }
+                } else {
+                    response.push_str("No bank directory found for this channel.");
+                }
+                let _ = msg.channel_id.say(&ctx.http, response).await;
                 return;
             }
             "triggers" | "trigger-list" => {
@@ -209,8 +302,8 @@ impl EventHandler for Handler {
             }
             "list" => {
                 let mut response = String::from("**Session List for this channel:**\n");
-                let channel_dir = format!("workspace/sessions/{}", msg.channel_id);
-                if let Ok(mut entries) = fs::read_dir(&channel_dir).await {
+                let sessions_dir = format!("{}/sessions", channel_dir);
+                if let Ok(mut entries) = fs::read_dir(&sessions_dir).await {
                     while let Ok(Some(entry)) = entries.next_entry().await {
                         let file_name = entry.file_name().to_string_lossy().into_owned();
                         if file_name.ends_with(".md") {
@@ -229,7 +322,7 @@ impl EventHandler for Handler {
             }
             "resume" => {
                 if let Some(session_name) = parts.get(1) {
-                    let path = format!("workspace/sessions/{}/{}", msg.channel_id, session_name);
+                    let path = format!("{}/sessions/{}", channel_dir, session_name);
                     if fs::metadata(&path).await.is_ok() {
                         {
                             let mut sessions = self.active_sessions.lock().await;
@@ -248,7 +341,7 @@ impl EventHandler for Handler {
             }
             "summary" => {
                 if let Some(session_name) = parts.get(1) {
-                    let path = format!("workspace/sessions/{}/{}", msg.channel_id, session_name);
+                    let path = format!("{}/sessions/{}", channel_dir, session_name);
                     if fs::metadata(&path).await.is_ok() {
                         let current_size = self.queue_size.load(Ordering::SeqCst);
                         if current_size >= 3 {
@@ -278,6 +371,8 @@ impl EventHandler for Handler {
                             workspace_path,
                             content: "Summarize the above conversation history in a concise way.".to_string(),
                             is_first_message: false,
+                            attachment_paths: vec![],
+                            is_indexing: false,
                         };
                         if let Err(e) = self.queue_tx.send(request).await {
                             log_to_file("ERROR", &format!("Failed to send summary request to queue: {}", e)).await;
@@ -316,13 +411,13 @@ impl EventHandler for Handler {
                                     path.clone()
                                 } else {
                                     drop(sessions);
-                                    let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                                    let path = get_or_create_session(&self.active_sessions, msg.channel_id, &channel_dir).await;
                                     self.save_state().await;
                                     path
                                 }
                             } else {
                                 drop(sessions);
-                                let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                                let path = get_or_create_session(&self.active_sessions, msg.channel_id, &channel_dir).await;
                                 self.save_state().await;
                                 path
                             }
@@ -389,6 +484,8 @@ impl EventHandler for Handler {
                             workspace_path,
                             content: task.prompt,
                             is_first_message,
+                            attachment_paths: vec![],
+                            is_indexing: false,
                         };
 
                         if let Err(e) = self.queue_tx.send(request).await {
@@ -421,8 +518,8 @@ impl EventHandler for Handler {
                 }
                 if content_str == "session list" {
                     let mut response = String::from("**Session List for this channel:**\n");
-                    let channel_dir = format!("workspace/sessions/{}", msg.channel_id);
-                    if let Ok(mut entries) = fs::read_dir(&channel_dir).await {
+                    let sessions_dir = format!("{}/sessions", channel_dir);
+                    if let Ok(mut entries) = fs::read_dir(&sessions_dir).await {
                         while let Ok(Some(entry)) = entries.next_entry().await {
                             let file_name = entry.file_name().to_string_lossy().into_owned();
                             if file_name.ends_with(".md") {
@@ -459,13 +556,13 @@ impl EventHandler for Handler {
                     path.clone()
                 } else {
                     drop(sessions);
-                    let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                    let path = get_or_create_session(&self.active_sessions, msg.channel_id, &channel_dir).await;
                     self.save_state().await;
                     path
                 }
             } else {
                 drop(sessions);
-                let path = get_or_create_session(&self.active_sessions, msg.channel_id).await;
+                let path = get_or_create_session(&self.active_sessions, msg.channel_id, &channel_dir).await;
                 self.save_state().await;
                 path
             }
@@ -497,6 +594,8 @@ impl EventHandler for Handler {
             workspace_path,
             content: content_str,
             is_first_message,
+            attachment_paths: attached_files,
+            is_indexing: false,
         };
 
         if let Err(e) = self.queue_tx.send(request).await {

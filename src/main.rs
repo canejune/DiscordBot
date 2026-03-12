@@ -27,20 +27,28 @@ async fn main() {
     let queue_size = Arc::new(AtomicUsize::new(0));
     let worker_queue_size = Arc::clone(&queue_size);
 
-    if !std::path::Path::new("workspace/sessions").exists() {
-        let _ = std::fs::create_dir_all("workspace/sessions");
+    if !std::path::Path::new("workspace/channels").exists() {
+        let _ = std::fs::create_dir_all("workspace/channels");
     }
 
     let mut active_sessions = HashMap::new();
     let mut workspace_folders = HashMap::new();
     let mut scheduled_tasks = Vec::new();
 
-    if let Ok(state_json) = std::fs::read_to_string("workspace/sessions/state.json") {
+    if let Ok(state_json) = std::fs::read_to_string("workspace/state.json") {
         if let Ok(state) = serde_json::from_str::<crate::types::BotState>(&state_json) {
             active_sessions = state.active_sessions;
             workspace_folders = state.workspace_folders;
             scheduled_tasks = state.scheduled_tasks;
             println!("Loaded state for {} channels and {} scheduled tasks", active_sessions.len(), scheduled_tasks.len());
+        }
+    } else if let Ok(state_json) = std::fs::read_to_string("workspace/sessions/state.json") {
+        // Fallback for old state path
+        if let Ok(state) = serde_json::from_str::<crate::types::BotState>(&state_json) {
+            active_sessions = state.active_sessions;
+            workspace_folders = state.workspace_folders;
+            scheduled_tasks = state.scheduled_tasks;
+            println!("Loaded state from old path for {} channels", active_sessions.len());
         }
     }
 
@@ -120,6 +128,8 @@ async fn main() {
                     workspace_path: scheduled.workspace_path,
                     content: task_def.prompt,
                     is_first_message: false,
+                    attachment_paths: vec![],
+                    is_indexing: false,
                 };
                 if let Err(e) = tx_scheduler.send(req).await {
                     println!("[DEBUG] Scheduler: Failed to send request: {}", e);

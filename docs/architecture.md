@@ -38,7 +38,7 @@ sequenceDiagram
     else Queue OK
         H->>H: Parse Command (new, list, resume, summary, workspace, terminate, info, trigger, untrigger, triggers)
         H->>S: get_or_create_session()
-        S->>FS: Create/Read workspace/sessions/*.md
+        S->>FS: Create/Read workspace/channels/channel_name/sessions/*.md
         S-->>H: session_path
         H->>Q: Send GeminiRequest
         Note over H,W: Async Delegation via mpsc
@@ -66,7 +66,7 @@ sequenceDiagram
 | **main.rs** | Entry point. Initializes the bot, mpsc channel, and a background scheduler loop that checks for pending tasks every 30 seconds. Loads `state.json` to restore previous sessions and schedules. | `main()` |
 | **handler.rs** | Implements Serenity's `EventHandler`. Manages command parsing (`new`, `list`, `resume`, `summary`, `workspace`, `terminate`, `info`, `trigger`, `untrigger`, `triggers`), request queuing, and state persistence to `state.json`. | `message()`, `ready()`, `save_state()` |
 | **gemini.rs** | Orchestrates the Gemini CLI. Handles stdin piping (SOUL.md + History), output streaming, session updates, and autonomous trigger detection with optional scheduling. | `process_gemini_request()` |
-| **session.rs** | Manages persistent conversation history. Handles session creation and retrieval from per-channel directories in `workspace/sessions/{channel_id}/`. | `get_or_create_session()` |
+| **session.rs** | Manages persistent conversation history. Handles session creation and retrieval from per-channel directories in `workspace/channels/{channel_name}/sessions/`. | `get_or_create_session()` |
 | **utils.rs** | Shared helper functions for logging and intelligent message splitting for Discord's limits. | `log_to_file()`, `split_message()` |
 | **types.rs** | Defines the `GeminiRequest` and `BotState` structs used for communication and state management. | `struct GeminiRequest`, `struct BotState` |
 
@@ -103,13 +103,13 @@ The bot runs a background loop (in `main.rs`) that checks every 30 seconds for s
 1.  **Input**: User messages or commands are received by the `Handler`.
 2.  **Context Injection**:
     *   **SOUL.md**: If `workspace/SOUL.md` exists, it is piped to the CLI's `stdin` as the first context block.
-    *   **Session History**: The content of the current session's Markdown file (`workspace/sessions/{channel_id}/{session_name}.md`) is piped to `stdin` after the SOUL.
+    *   **Session History**: The content of the current session's Markdown file (`workspace/channels/{channel_name}/sessions/{session_name}.md`) is piped to `stdin` after the SOUL.
     *   **Workspace**: If a workspace path is set via the `workspace` command, it is passed to the CLI via the `--include-directories` flag.
 3.  **Execution**: The CLI is invoked with a system prompt and the latest message. Output is captured from `stdout` (for content) and `stderr` (for errors/debugging).
 4.  **Streaming**: Responses are buffered and sent to Discord in chunks (max 2000 chars) to ensure real-time feedback.
 5.  **Persistence**:
-    *   **Sessions**: Saved in `workspace/sessions/{channel_id}/{timestamp}.md`. This ensures that each channel maintains its own independent conversation history.
-    *   **State**: The bot's global state (active session and current workspace for each channel) is saved to `workspace/sessions/state.json` whenever it changes. This allows the bot to resume seamlessly after a restart.
+    *   **Sessions**: Saved in `workspace/channels/{channel_name}/sessions/{timestamp}.md`. This ensures that each channel maintains its own independent conversation history.
+    *   **State**: The bot's global state (active session and current workspace for each channel) is saved to `workspace/state.json` whenever it changes. This allows the bot to resume seamlessly after a restart.
     *   **Logging**: Full CLI invocations are logged to `bot.log`.
     *   **Title**: The first message of a session triggers an update of the H1 header in the session file to serve as a title.
 

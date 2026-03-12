@@ -16,6 +16,8 @@ pub struct GeminiRequest {
     pub workspace_path: Option<String>,
     pub content: String,
     pub is_first_message: bool,
+    pub attachment_paths: Vec<String>,
+    pub is_indexing: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

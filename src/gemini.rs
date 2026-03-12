@@ -27,6 +27,19 @@ pub async fn process_gemini_request(
 
     println!("[DEBUG] Content: {}", content);
 
+    let mut final_content = content.clone();
+    if !req.attachment_paths.is_empty() {
+        let mut file_contents = String::new();
+        for file_path in &req.attachment_paths {
+            if let Ok(content) = fs::read_to_string(file_path).await {
+                file_contents.push_str(&format!("File Content of `{}`:\n```\n{}\n```\n\n", file_path, content));
+            }
+        }
+        if !file_contents.is_empty() {
+            final_content = format!("{}\nInstruction: {}", file_contents, content);
+        }
+    }
+
     let system_instruction = "You are a helpful Discord bot. Above is the conversation history for context. \
                              Do NOT repeat previous answers or the 'Gemini:' prefix in your response. \
                              Your task is to respond specifically to the message below using the history (provided via stdin) for context.";
@@ -35,7 +48,7 @@ pub async fn process_gemini_request(
         "{}\n\n[Latest Message]\n{}: {}\nGemini: ", 
         system_instruction,
         user_name,
-        content
+        final_content
     );
 
     let _ = channel_id.broadcast_typing(&http).await;
@@ -173,6 +186,31 @@ pub async fn process_gemini_request(
             let final_response_trimmed = final_response.trim();
 
             if !final_response_trimmed.is_empty() {
+                if req.is_indexing {
+                    // Update index.md
+                    if let Ok(channel_name) = channel_id.name(&http).await {
+                        let sanitized = crate::utils::sanitize_filename(&channel_name);
+                        let index_path = format!("workspace/channels/{}/index.md", sanitized);
+                        
+                        let mut index_file = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&index_path)
+                            .await
+                            .unwrap();
+                        
+                        if let Ok(metadata) = fs::metadata(&index_path).await {
+                            if metadata.len() == 0 {
+                                let _ = index_file.write_all(b"# Channel File Index\n\n").await;
+                            }
+                        }
+                        
+                        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                        let index_entry = format!("- [{}] {}\n", timestamp, final_response_trimmed);
+                        let _ = index_file.write_all(index_entry.as_bytes()).await;
+                    }
+                }
+
                 match OpenOptions::new().append(true).open(&session_path).await {
                     Ok(mut file) => {
                         let _ = file.write_all(format!("\nUser: {}\nGemini: {}\n", content, final_response_trimmed).as_bytes()).await;
@@ -232,6 +270,8 @@ pub async fn process_gemini_request(
                             workspace_path: req.workspace_path.clone(),
                             content: task.prompt,
                             is_first_message: false,
+                            attachment_paths: vec![],
+                            is_indexing: false,
                         };
                         
                         if queue_size.load(Ordering::SeqCst) < 3 {
