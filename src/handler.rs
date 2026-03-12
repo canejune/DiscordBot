@@ -292,6 +292,7 @@ impl EventHandler for Handler {
                 return;
             }
             "trigger" => {
+                println!("[DEBUG] Trigger command received: {:?}", parts);
                 if let Some(task_id) = parts.get(1) {
                     let tasks_json = fs::read_to_string("workspace/tasks.json").await.unwrap_or_else(|_| "{\"tasks\": []}".to_string());
                     let task_list: crate::types::TaskList = serde_json::from_str(&tasks_json).unwrap_or(crate::types::TaskList { tasks: vec![] });
@@ -299,8 +300,10 @@ impl EventHandler for Handler {
                     let found_task = task_list.tasks.iter().find(|t| t.id == *task_id).cloned();
 
                     if let Some(task) = found_task {
+                        println!("[DEBUG] Found task: {:?}", task.id);
                         let current_size = self.queue_size.load(Ordering::SeqCst);
                         if current_size >= 3 {
+                            println!("[DEBUG] Queue full (3/3)");
                             let _ = msg.react(&ctx.http, '⏳').await;
                             let _ = msg.channel_id.say(&ctx.http, "I'm currently busy, please wait a moment! (Queue is full: 3/3) ⏳").await;
                             return;
@@ -331,8 +334,10 @@ impl EventHandler for Handler {
                             true
                         };
 
-                        let workspaces = self.workspace_folders.lock().await;
-                        let workspace_path = workspaces.get(&msg.channel_id).cloned();
+                        let workspace_path = {
+                            let workspaces = self.workspace_folders.lock().await;
+                            workspaces.get(&msg.channel_id).cloned()
+                        };
 
                         let soul_path = if fs::metadata("workspace/SOUL.md").await.is_ok() {
                             Some("workspace/SOUL.md".to_string())
@@ -342,27 +347,38 @@ impl EventHandler for Handler {
 
                         // If it has an interval, schedule it
                         if let Some(interval) = task.interval {
-                            let mut scheduled = self.scheduled_tasks.lock().await;
-                            // Check if already scheduled for this channel
-                            if !scheduled.iter().any(|s| s.task_id == *task_id && s.channel_id == msg.channel_id) {
-                                scheduled.push(ScheduledTask {
-                                    task_id: task.id.clone(),
-                                    channel_id: msg.channel_id,
-                                    session_path: session_path.clone(),
-                                    workspace_path: workspace_path.clone(),
-                                    last_run: Utc::now(),
-                                });
-                                drop(scheduled);
+                            println!("[DEBUG] Task has interval: {}s. Checking if already scheduled.", interval);
+                            let is_already_scheduled = {
+                                let scheduled = self.scheduled_tasks.lock().await;
+                                scheduled.iter().any(|s| s.task_id == *task_id && s.channel_id == msg.channel_id)
+                            };
+
+                            if !is_already_scheduled {
+                                println!("[DEBUG] Scheduling task for first time.");
+                                {
+                                    let mut scheduled = self.scheduled_tasks.lock().await;
+                                    scheduled.push(ScheduledTask {
+                                        task_id: task.id.clone(),
+                                        channel_id: msg.channel_id,
+                                        session_path: session_path.clone(),
+                                        workspace_path: workspace_path.clone(),
+                                        last_run: Utc::now(),
+                                    });
+                                }
+                                println!("[DEBUG] Saving state after scheduling.");
                                 self.save_state().await;
                                 let _ = msg.channel_id.say(&ctx.http, format!("Task `{}` scheduled every {} seconds! 🕒", task_id, interval)).await;
                             } else {
+                                println!("[DEBUG] Task already scheduled for this channel.");
                                 let _ = msg.channel_id.say(&ctx.http, format!("Task `{}` is already scheduled for this channel.", task_id)).await;
                             }
-                            return;
+                            // Don't return here anymore, let it run once immediately
+                            println!("[DEBUG] Proceeding to immediate execution for triggered task.");
                         }
 
                         let _ = msg.react(&ctx.http, '👀').await;
                         self.queue_size.fetch_add(1, Ordering::SeqCst);
+                        println!("[DEBUG] Preparing GeminiRequest for trigger: {}", task.id);
                         let request = GeminiRequest {
                             http: ctx.http.clone(),
                             channel_id: msg.channel_id,
@@ -376,13 +392,18 @@ impl EventHandler for Handler {
                         };
 
                         if let Err(e) = self.queue_tx.send(request).await {
+                            println!("[DEBUG] Failed to send to queue_tx: {}", e);
                             log_to_file("ERROR", &format!("Failed to send triggered request to queue: {}", e)).await;
                             self.queue_size.fetch_sub(1, Ordering::SeqCst);
+                        } else {
+                            println!("[DEBUG] Successfully sent to queue_tx");
                         }
                     } else {
+                        println!("[DEBUG] Task ID not found: {}", task_id);
                         let _ = msg.channel_id.say(&ctx.http, format!("Error: Trigger ID `{}` not found.", task_id)).await;
                     }
                 } else {
+                    println!("[DEBUG] Trigger command missing task ID");
                     let _ = msg.channel_id.say(&ctx.http, "Usage: `trigger [task_id]`").await;
                 }
                 return;

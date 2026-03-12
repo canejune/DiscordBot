@@ -23,7 +23,7 @@ async fn main() {
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
 
-    let (tx, mut rx) = mpsc::channel(10);
+    let (tx, mut rx): (mpsc::Sender<crate::types::GeminiRequest>, mpsc::Receiver<crate::types::GeminiRequest>) = mpsc::channel(10);
     let queue_size = Arc::new(AtomicUsize::new(0));
     let worker_queue_size = Arc::clone(&queue_size);
 
@@ -49,15 +49,15 @@ async fn main() {
     let worker_scheduled_tasks = Arc::clone(&scheduled_tasks_mutex);
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
+            println!("[DEBUG] Worker received GeminiRequest for channel: {}", req.channel_id);
             process_gemini_request(
-                req, 
-                Arc::clone(&worker_queue_size), 
+                req,
+                Arc::clone(&worker_queue_size),
                 tx_worker.clone(),
                 Arc::clone(&worker_scheduled_tasks)
             ).await;
         }
     });
-    
     let handler = Handler {
         active_sessions: Mutex::new(active_sessions),
         workspace_folders: Mutex::new(workspace_folders),
@@ -108,7 +108,7 @@ async fn main() {
             }
 
             for (scheduled, task_def) in tasks_to_run {
-                println!("Scheduler: Running task {}", task_def.id);
+                println!("[DEBUG] Scheduler: Running task {}", task_def.id);
                 scheduler_queue_size.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let req = crate::types::GeminiRequest {
                     http: http.clone(),
@@ -122,8 +122,11 @@ async fn main() {
                     is_first_message: false,
                 };
                 if let Err(e) = tx_scheduler.send(req).await {
+                    println!("[DEBUG] Scheduler: Failed to send request: {}", e);
                     eprintln!("Scheduler: Failed to send request: {}", e);
                     scheduler_queue_size.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    println!("[DEBUG] Scheduler: Successfully sent task {} to queue", task_def.id);
                 }
             }
         }

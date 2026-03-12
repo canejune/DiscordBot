@@ -80,13 +80,23 @@ The Trigger Event System allows the bot to execute predefined tasks based on spe
     ```json
     {
       "tasks": [
-        { "id": "daily_report", "prompt": "Summarize today's activities." }
+        { "id": "daily_report", "prompt": "Summarize today's activities.", "interval": 86400 }
       ]
     }
     ```
-2.  **Manual Trigger**: Users can invoke a task using the `!trigger <id>` command. The handler looks up the prompt in the registry and queues it as a `GeminiRequest`.
+    Tasks can optionally include an `interval` in seconds.
+2.  **Manual Trigger**: Users can invoke a task using the `!trigger <id>` command. 
+    - If the task has an `interval`, it is added to the **Scheduled Tasks** list and will run periodically.
+    - The task is also executed **immediately** upon being triggered.
 3.  **Autonomous Trigger**: The AI can trigger its own next steps by including `[[trigger:<id>]]` in its response. The `gemini.rs` module uses regex to scan for this pattern and automatically re-queues the associated task.
 4.  **System-Initiated Requests**: `GeminiRequest` has been decoupled from requiring a direct user `Message` object, allowing the system or the AI to initiate requests using only a `ChannelId`.
+
+## 🕒 Background Scheduler
+
+The bot runs a background loop (in `main.rs`) that checks every 30 seconds for scheduled tasks that are due to run. 
+- It compares the `last_run` time with the current time and the task's `interval`.
+- When a task is due, it creates a `GeminiRequest` and sends it to the worker queue.
+- Scheduled tasks are persisted in the bot's state, allowing them to resume after a restart.
 
 ## 📁 Data Flow & Persistence
 

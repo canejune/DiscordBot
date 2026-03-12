@@ -16,6 +16,7 @@ pub async fn process_gemini_request(
     queue_tx: mpsc::Sender<GeminiRequest>,
     scheduled_tasks: Arc<Mutex<Vec<crate::types::ScheduledTask>>>
 ) {
+    println!("[DEBUG] Processing GeminiRequest for channel: {}", req.channel_id);
     let http = req.http;
     let channel_id = req.channel_id;
     let user_name = req.user_name;
@@ -23,6 +24,8 @@ pub async fn process_gemini_request(
     let session_path = req.session_path;
     let content = req.content;
     let is_first_message = req.is_first_message;
+
+    println!("[DEBUG] Content: {}", content);
 
     let system_instruction = "You are a helpful Discord bot. Above is the conversation history for context. \
                              Do NOT repeat previous answers or the 'Gemini:' prefix in your response. \
@@ -61,7 +64,10 @@ pub async fn process_gemini_request(
     command.stdin(std::process::Stdio::piped());
 
     let mut child = match command.spawn() {
-        Ok(child) => child,
+        Ok(child) => {
+            println!("[DEBUG] Gemini CLI spawned successfully, PID: {:?}", child.id());
+            child
+        },
         Err(e) => {
             let err_msg = format!("Failed to spawn Gemini CLI: {}", e);
             eprintln!("{}", err_msg);
@@ -107,6 +113,7 @@ pub async fn process_gemini_request(
             line = stdout_reader.next_line(), if !stdout_done => {
                 match line {
                     Ok(Some(l)) => {
+                        println!("[DEBUG] CLI stdout: {}", l);
                         final_stdout.push_str(&l);
                         final_stdout.push('\n');
                         buffer.push_str(&l);
@@ -114,6 +121,7 @@ pub async fn process_gemini_request(
                         
                         if buffer.len() > 1000 || last_send.elapsed().as_secs() > 3 {
                             if !buffer.trim().is_empty() {
+                                println!("[DEBUG] Sending chunk to Discord ({} bytes)", buffer.len());
                                 for chunk in split_message(&buffer, 1900) {
                                     let _ = channel_id.say(&http, chunk).await;
                                 }
@@ -122,28 +130,37 @@ pub async fn process_gemini_request(
                             }
                         }
                     }
-                    _ => stdout_done = true,
+                    _ => {
+                        println!("[DEBUG] CLI stdout reached EOF");
+                        stdout_done = true;
+                    },
                 }
             }
             line = stderr_reader.next_line(), if !stderr_done => {
                 match line {
                     Ok(Some(l)) => {
+                        println!("[DEBUG] CLI stderr: {}", l);
                         final_stderr.push_str(&l);
                         final_stderr.push('\n');
                     }
-                    _ => stderr_done = true,
+                    _ => {
+                        println!("[DEBUG] CLI stderr reached EOF");
+                        stderr_done = true;
+                    },
                 }
             }
         }
     }
 
     if !buffer.trim().is_empty() {
+        println!("[DEBUG] Sending final chunk to Discord ({} bytes)", buffer.len());
         for chunk in split_message(&buffer, 1900) {
             let _ = channel_id.say(&http, chunk).await;
         }
     }
 
     let status = child.wait().await;
+    println!("[DEBUG] Gemini CLI process exited with status: {:?}", status);
 
     match status {
         Ok(s) if s.success() => {
