@@ -3,13 +3,13 @@ use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::model::id::ChannelId;
 use serenity::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::fs;
 use tokio::sync::{mpsc, Mutex};
 use tokio::process::Command;
-use crate::types::GeminiRequest;
+use crate::types::{GeminiRequest, ScheduledTask};
 use crate::utils::log_to_file;
 use crate::session::get_or_create_session;
 use serde_json;
@@ -18,9 +18,9 @@ use chrono::{DateTime, Utc};
 pub struct Handler {
     pub active_sessions: Mutex<HashMap<ChannelId, String>>,
     pub workspace_folders: Mutex<HashMap<ChannelId, String>>,
+    pub scheduled_tasks: Arc<Mutex<Vec<ScheduledTask>>>,
     pub queue_tx: mpsc::Sender<GeminiRequest>,
     pub queue_size: Arc<AtomicUsize>,
-    pub waiting_for_restart: Mutex<HashSet<ChannelId>>,
     pub start_time: DateTime<Utc>,
 }
 
@@ -28,9 +28,11 @@ impl Handler {
     async fn save_state(&self) {
         let active_sessions = self.active_sessions.lock().await.clone();
         let workspace_folders = self.workspace_folders.lock().await.clone();
+        let scheduled_tasks = self.scheduled_tasks.lock().await.clone();
         let state = crate::types::BotState {
             active_sessions,
             workspace_folders,
+            scheduled_tasks,
         };
         if let Ok(json) = serde_json::to_string_pretty(&state) {
             let _ = fs::write("workspace/sessions/state.json", json).await;
@@ -49,49 +51,6 @@ impl EventHandler for Handler {
         let parts: Vec<&str> = content_str.split_whitespace().collect();
         let command = parts.get(0).map(|s| s.to_lowercase()).unwrap_or_default();
 
-        // Check if waiting for restart confirmation
-        {
-            let mut waiting = self.waiting_for_restart.lock().await;
-            if waiting.contains(&msg.channel_id) {
-                if content_str.to_lowercase() == "yes" {
-                    println!("Restart initiated by {} in channel {}", msg.author.name, msg.channel_id);
-                    let _ = msg.channel_id.say(&ctx.http, "Restarting... 🔄").await;
-                    
-                    // Spawn a new instance of the current executable
-                    match std::env::current_exe() {
-                        Ok(exe) => {
-                            let args: Vec<String> = std::env::args().skip(1).collect();
-                            println!("Spawning new process: {:?} with args: {:?}", exe, args);
-                            match std::process::Command::new(exe)
-                                .args(args)
-                                .spawn() 
-                            {
-                                Ok(_) => {
-                                    println!("New process spawned successfully. Exiting current process...");
-                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                                    std::process::exit(0);
-                                },
-                                Err(e) => {
-                                    eprintln!("Failed to spawn new process: {}", e);
-                                    let _ = msg.channel_id.say(&ctx.http, format!("Failed to restart: could not spawn new process ({}).", e)).await;
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!("Failed to get current executable path: {}", e);
-                            let _ = msg.channel_id.say(&ctx.http, format!("Failed to restart: could not find executable path ({}).", e)).await;
-                        }
-                    }
-                    waiting.remove(&msg.channel_id);
-                    return;
-                } else {
-                    waiting.remove(&msg.channel_id);
-                    let _ = msg.channel_id.say(&ctx.http, "Restart cancelled.").await;
-                    return; // Don't process this message further
-                }
-            }
-        }
-
         match command.as_str() {
             "help" => {
                 let help_text = "**Gemini Bot Commands:**\n\
@@ -99,13 +58,61 @@ impl EventHandler for Handler {
                                  - `list`: Show saved session files for this channel.\n\
                                  - `resume [session]`: Continue a specific session.\n\
                                  - `summary [session]`: Get an AI summary of a session.\n\
-                                 - `trigger [id]`: Execute a predefined task (trigger).\n\
+                                 - `trigger [id]`: Execute a predefined task. If it has an interval, it schedules it.\n\
+                                 - `untrigger [id]`: Stop a scheduled task for this channel.\n\
+                                 - `triggers` | `trigger-list`: List all available and active triggers.\n\
                                  - `workspace [path]`: Set a folder for AI context.\n\
-                                 - `restart`: Restart the bot with confirmation.\n\
+                                 - `terminate`: Terminate the bot process.\n\
                                  - `info`: Show bot info, system, and network.\n\
                                  - `help`: Show this help message.\n\n\
                                  *Any other message will be treated as chat input.*";
                 let _ = msg.channel_id.say(&ctx.http, help_text).await;
+                return;
+            }
+            "triggers" | "trigger-list" => {
+                let tasks_json = fs::read_to_string("workspace/tasks.json").await.unwrap_or_else(|_| "{\"tasks\": []}".to_string());
+                let task_list: crate::types::TaskList = serde_json::from_str(&tasks_json).unwrap_or(crate::types::TaskList { tasks: vec![] });
+                
+                let mut response = String::from("**Available Trigger Tasks (from tasks.json):**\n");
+                if task_list.tasks.is_empty() {
+                    response.push_str("No tasks available.\n");
+                } else {
+                    for t in &task_list.tasks {
+                        let interval_str = t.interval.map(|i| format!(" ({}s interval)", i)).unwrap_or_default();
+                        response.push_str(&format!("- `{}`: {}{}\n", t.id, t.prompt, interval_str));
+                    }
+                }
+
+                let scheduled = self.scheduled_tasks.lock().await;
+                response.push_str("\n**Active Schedules for this channel:**\n");
+                let mut count = 0;
+                for s in scheduled.iter() {
+                    if s.channel_id == msg.channel_id {
+                        response.push_str(&format!("- `{}` (Last run: {})\n", s.task_id, s.last_run.format("%Y-%m-%d %H:%M:%S UTC")));
+                        count += 1;
+                    }
+                }
+                if count == 0 {
+                    response.push_str("No active triggers scheduled.");
+                }
+                let _ = msg.channel_id.say(&ctx.http, response).await;
+                return;
+            }
+            "untrigger" => {
+                if let Some(task_id) = parts.get(1) {
+                    let mut scheduled = self.scheduled_tasks.lock().await;
+                    let initial_len = scheduled.len();
+                    scheduled.retain(|s| !(s.task_id == *task_id && s.channel_id == msg.channel_id));
+                    if scheduled.len() < initial_len {
+                        drop(scheduled);
+                        self.save_state().await;
+                        let _ = msg.channel_id.say(&ctx.http, format!("Removed trigger `{}` from schedule. 🛑", task_id)).await;
+                    } else {
+                        let _ = msg.channel_id.say(&ctx.http, format!("Trigger `{}` was not scheduled for this channel.", task_id)).await;
+                    }
+                } else {
+                    let _ = msg.channel_id.say(&ctx.http, "Usage: `untrigger [task_id]`").await;
+                }
                 return;
             }
             "info" => {
@@ -168,13 +175,11 @@ impl EventHandler for Handler {
                 }
                 return;
             }
-            "restart" => {
-                {
-                    let mut waiting = self.waiting_for_restart.lock().await;
-                    waiting.insert(msg.channel_id);
-                }
-                let _ = msg.channel_id.say(&ctx.http, "Are you sure you want to restart the bot? Type `yes` to confirm.").await;
-                return;
+            "terminate" => {
+                let _ = msg.channel_id.say(&ctx.http, "Terminating bot... 👋").await;
+                println!("Termination initiated by {} in channel {}", msg.author.name, msg.channel_id);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(0);
             }
             "new" => {
                 {
@@ -245,6 +250,13 @@ impl EventHandler for Handler {
                 if let Some(session_name) = parts.get(1) {
                     let path = format!("workspace/sessions/{}/{}", msg.channel_id, session_name);
                     if fs::metadata(&path).await.is_ok() {
+                        let current_size = self.queue_size.load(Ordering::SeqCst);
+                        if current_size >= 3 {
+                            let _ = msg.react(&ctx.http, '⏳').await;
+                            let _ = msg.channel_id.say(&ctx.http, "I'm currently busy, please wait a moment! (Queue is full: 3/3) ⏳").await;
+                            return;
+                        }
+
                         let _ = msg.react(&ctx.http, '👀').await;
                         self.queue_size.fetch_add(1, Ordering::SeqCst);
                         let workspaces = self.workspace_folders.lock().await;
@@ -257,7 +269,7 @@ impl EventHandler for Handler {
                         };
 
                         let request = GeminiRequest {
-                            ctx: ctx.clone(),
+                            http: ctx.http.clone(),
                             channel_id: msg.channel_id,
                             user_name: msg.author.name.clone(),
                             msg: Some(msg.clone()),
@@ -282,19 +294,18 @@ impl EventHandler for Handler {
             "trigger" => {
                 if let Some(task_id) = parts.get(1) {
                     let tasks_json = fs::read_to_string("workspace/tasks.json").await.unwrap_or_else(|_| "{\"tasks\": []}".to_string());
-                    let v: serde_json::Value = serde_json::from_str(&tasks_json).unwrap_or(serde_json::json!({"tasks": []}));
-                    let mut found_prompt = None;
-                    if let Some(tasks) = v["tasks"].as_array() {
-                        for task in tasks {
-                            if task["id"] == *task_id {
-                                found_prompt = task["prompt"].as_str().map(|s| s.to_string());
-                                break;
-                            }
-                        }
-                    }
+                    let task_list: crate::types::TaskList = serde_json::from_str(&tasks_json).unwrap_or(crate::types::TaskList { tasks: vec![] });
+                    
+                    let found_task = task_list.tasks.iter().find(|t| t.id == *task_id).cloned();
 
-                    if let Some(prompt) = found_prompt {
-                        let _ = msg.react(&ctx.http, '👀').await;
+                    if let Some(task) = found_task {
+                        let current_size = self.queue_size.load(Ordering::SeqCst);
+                        if current_size >= 3 {
+                            let _ = msg.react(&ctx.http, '⏳').await;
+                            let _ = msg.channel_id.say(&ctx.http, "I'm currently busy, please wait a moment! (Queue is full: 3/3) ⏳").await;
+                            return;
+                        }
+
                         let session_path = {
                             let sessions = self.active_sessions.lock().await;
                             if let Some(path) = sessions.get(&msg.channel_id) {
@@ -329,16 +340,38 @@ impl EventHandler for Handler {
                             None
                         };
 
+                        // If it has an interval, schedule it
+                        if let Some(interval) = task.interval {
+                            let mut scheduled = self.scheduled_tasks.lock().await;
+                            // Check if already scheduled for this channel
+                            if !scheduled.iter().any(|s| s.task_id == *task_id && s.channel_id == msg.channel_id) {
+                                scheduled.push(ScheduledTask {
+                                    task_id: task.id.clone(),
+                                    channel_id: msg.channel_id,
+                                    session_path: session_path.clone(),
+                                    workspace_path: workspace_path.clone(),
+                                    last_run: Utc::now(),
+                                });
+                                drop(scheduled);
+                                self.save_state().await;
+                                let _ = msg.channel_id.say(&ctx.http, format!("Task `{}` scheduled every {} seconds! 🕒", task_id, interval)).await;
+                            } else {
+                                let _ = msg.channel_id.say(&ctx.http, format!("Task `{}` is already scheduled for this channel.", task_id)).await;
+                            }
+                            return;
+                        }
+
+                        let _ = msg.react(&ctx.http, '👀').await;
                         self.queue_size.fetch_add(1, Ordering::SeqCst);
                         let request = GeminiRequest {
-                            ctx,
+                            http: ctx.http.clone(),
                             channel_id: msg.channel_id,
                             user_name: msg.author.name.clone(),
                             msg: Some(msg.clone()),
                             session_path,
                             soul_path,
                             workspace_path,
-                            content: prompt,
+                            content: task.prompt,
                             is_first_message,
                         };
 
@@ -434,7 +467,7 @@ impl EventHandler for Handler {
 
         self.queue_size.fetch_add(1, Ordering::SeqCst);
         let request = GeminiRequest {
-            ctx,
+            http: ctx.http.clone(),
             channel_id: msg.channel_id,
             user_name: msg.author.name.clone(),
             msg: Some(msg),

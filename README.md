@@ -16,10 +16,12 @@ A powerful, modular Discord bot written in Rust that integrates with the Gemini 
   - `resume [session]`: Continue a previous session from its file.
   - `summary [session]`: Get an AI-generated summary of a specific session.
   - `workspace [path]`: Set a specific folder for AI context (channel-specific).
-  - `restart`: Restart the bot with confirmation.
+  - `terminate`: Terminate the bot process.
   - `info`: Show detailed bot information, system status, and network info.
-  - `trigger [id]`: Manually execute a predefined task from the registry.
-- **Trigger Event System**: Support for predefined tasks that can be triggered manually by users or autonomously by the AI using the `[[trigger:id]]` pattern.
+  - `trigger [id]`: Manually execute a predefined task or schedule it if it has an interval.
+  - `untrigger [id]`: Stop a scheduled task for the current channel.
+  - `triggers`: List all available tasks and active schedules.
+- **Trigger Event System**: Support for predefined tasks that can be triggered manually by users or autonomously by the AI using the `[[trigger:id]]` pattern. Tasks with an `interval` field in `tasks.json` are automatically scheduled and managed.
 - **State Persistence**: Automatically saves and restores active sessions and workspace settings across bot restarts using `state.json`.
 - **Queue System**: Handles concurrent requests efficiently with a sequential processing queue (up to 3 pending).
 - **Interactive Feedback**: Uses emoji reactions to show status:

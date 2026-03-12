@@ -1,3 +1,9 @@
 {
-  "tasks": []
+  "tasks": [
+    {
+      "id": "avgo_every_5min",
+      "prompt": "Check the current AVGO stock price",
+      "interval": 300
+    }
+  ]
 }
